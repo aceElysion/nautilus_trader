@@ -47,6 +47,9 @@ pub struct BinaryOption {
     pub id: InstrumentId,
     /// The raw/local/native symbol for the instrument, assigned by the venue.
     pub raw_symbol: Symbol,
+    /// Venue-specific instrument identifier code.
+    #[serde(default)]
+    pub inst_id_code: Option<u64>,
     /// The binary option asset class.
     pub asset_class: AssetClass,
     /// The binary option contract currency.
@@ -147,6 +150,7 @@ impl BinaryOption {
         Ok(Self {
             id: instrument_id,
             raw_symbol,
+            inst_id_code: None,
             asset_class,
             currency,
             activation_ns,

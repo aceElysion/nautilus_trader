@@ -875,6 +875,12 @@ pub struct WsPostOrderParams {
     pub inst_type: Option<OKXInstrumentType>,
     /// Instrument ID, e.g. "BTC-USDT".
     pub inst_id: Ustr,
+    /// Numeric instrument identifier from instrument metadata.
+    ///
+    /// Required by some OKX WebSocket trading operations.
+    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inst_id_code: Option<u64>,
     /// Trading mode: cash, isolated, cross.
     pub td_mode: OKXTradeMode,
     /// Margin currency (only for isolated margin).
@@ -925,6 +931,9 @@ pub struct WsPostOrderParams {
 pub struct WsCancelOrderParams {
     /// Instrument ID, e.g. "BTC-USDT".
     pub inst_id: Ustr,
+    /// Numeric instrument identifier from instrument metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inst_id_code: Option<u64>,
     /// Exchange-assigned order ID.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ord_id: Option<String>,
@@ -953,6 +962,9 @@ pub struct WsMassCancelParams {
 pub struct WsAmendOrderParams {
     /// Instrument ID, e.g. "BTC-USDT".
     pub inst_id: Ustr,
+    /// Numeric instrument identifier from instrument metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inst_id_code: Option<u64>,
     /// Exchange-assigned order ID (optional if using clOrdId).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ord_id: Option<String>,
@@ -977,6 +989,10 @@ pub struct WsAmendOrderParams {
 pub struct WsPostAlgoOrderParams {
     /// Instrument ID, e.g. "BTC-USDT".
     pub inst_id: Ustr,
+    /// Numeric instrument identifier from instrument metadata.
+    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inst_id_code: Option<u64>,
     /// Trading mode: cash, isolated, cross.
     pub td_mode: OKXTradeMode,
     /// Order side: buy or sell.
@@ -1021,6 +1037,9 @@ pub struct WsPostAlgoOrderParams {
 pub struct WsCancelAlgoOrderParams {
     /// Instrument ID, e.g. "BTC-USDT".
     pub inst_id: Ustr,
+    /// Numeric instrument identifier from instrument metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inst_id_code: Option<u64>,
     /// Algo order ID.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub algo_id: Option<String>,

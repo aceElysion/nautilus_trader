@@ -49,6 +49,9 @@ pub struct FuturesContract {
     pub id: InstrumentId,
     /// The raw/local/native symbol for the instrument, assigned by the venue.
     pub raw_symbol: Symbol,
+    /// Venue-specific instrument identifier code.
+    #[serde(default)]
+    pub inst_id_code: Option<u64>,
     /// The futures contract asset class.
     pub asset_class: AssetClass,
     /// The exchange ISO 10383 Market Identifier Code (MIC) where the instrument trades.
@@ -144,6 +147,7 @@ impl FuturesContract {
         Ok(Self {
             id: instrument_id,
             raw_symbol,
+            inst_id_code: None,
             asset_class,
             exchange,
             underlying,

@@ -59,6 +59,23 @@ impl InstrumentAny {
         }
     }
 
+    #[must_use]
+    pub fn inst_id_code(&self) -> Option<u64> {
+        match self {
+            Self::Betting(inst) => inst.inst_id_code,
+            Self::BinaryOption(inst) => inst.inst_id_code,
+            Self::CryptoFuture(inst) => inst.inst_id_code,
+            Self::CryptoOption(inst) => inst.inst_id_code,
+            Self::CryptoPerpetual(inst) => inst.inst_id_code,
+            Self::CurrencyPair(inst) => inst.inst_id_code,
+            Self::Equity(inst) => inst.inst_id_code,
+            Self::FuturesContract(inst) => inst.inst_id_code,
+            Self::FuturesSpread(inst) => inst.inst_id_code,
+            Self::OptionContract(inst) => inst.inst_id_code,
+            Self::OptionSpread(inst) => inst.inst_id_code,
+        }
+    }
+
     /// Returns true if the instrument is a spread instrument.
     #[must_use]
     pub fn is_spread(&self) -> bool {

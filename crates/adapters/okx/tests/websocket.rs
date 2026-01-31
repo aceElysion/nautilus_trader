@@ -87,13 +87,17 @@ fn load_json(filename: &str) -> Value {
 }
 
 fn load_instruments() -> Vec<InstrumentAny> {
-    let payload = load_json("http_get_instruments_spot.json");
-    let response: OKXResponse<OKXInstrument> =
-        serde_json::from_value(payload).expect("invalid instrument payload");
+    let spot_payload = load_json("http_get_instruments_spot.json");
+    let swap_payload = load_json("http_get_instruments_swap.json");
+    let spot_response: OKXResponse<OKXInstrument> =
+        serde_json::from_value(spot_payload).expect("invalid spot instrument payload");
+    let swap_response: OKXResponse<OKXInstrument> =
+        serde_json::from_value(swap_payload).expect("invalid swap instrument payload");
     let ts_init = UnixNanos::default();
-    response
+    spot_response
         .data
         .iter()
+        .chain(swap_response.data.iter())
         .filter_map(|raw| {
             parse_instrument_any(raw, None, None, None, None, ts_init)
                 .ok()

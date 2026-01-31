@@ -48,6 +48,9 @@ pub struct CryptoPerpetual {
     pub id: InstrumentId,
     /// The raw/local/native symbol for the instrument, assigned by the venue.
     pub raw_symbol: Symbol,
+    /// Venue-specific instrument identifier code.
+    #[serde(default)]
+    pub inst_id_code: Option<u64>,
     /// The base currency.
     pub base_currency: Currency,
     /// The quote currency.
@@ -148,6 +151,7 @@ impl CryptoPerpetual {
         Ok(Self {
             id: instrument_id,
             raw_symbol,
+            inst_id_code: None,
             base_currency,
             quote_currency,
             settlement_currency,

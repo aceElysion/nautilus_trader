@@ -48,6 +48,9 @@ pub struct BettingInstrument {
     pub id: InstrumentId,
     /// The raw/local/native symbol for the instrument, assigned by the venue.
     pub raw_symbol: Symbol,
+    /// Venue-specific instrument identifier code.
+    #[serde(default)]
+    pub inst_id_code: Option<u64>,
     /// The event type identifier (e.g. 1=Soccer, 2=Tennis).
     pub event_type_id: u64,
     /// The name of the event type (e.g. "Soccer", "Tennis").
@@ -181,6 +184,7 @@ impl BettingInstrument {
         Ok(Self {
             id: instrument_id,
             raw_symbol,
+            inst_id_code: None,
             event_type_id,
             event_type_name,
             competition_id,

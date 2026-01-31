@@ -64,8 +64,8 @@ use super::{
     messages::{
         ExecutionReport, NautilusWsMessage, OKXAlgoOrderMsg, OKXBookMsg, OKXOrderMsg,
         OKXSubscription, OKXSubscriptionArg, OKXWebSocketArg, OKXWebSocketError, OKXWsMessage,
-        OKXWsRequest, WsAmendOrderParams, WsCancelAlgoOrderParamsBuilder,
-        WsCancelOrderParamsBuilder, WsMassCancelParams, WsPostAlgoOrderParams, WsPostOrderParams,
+        OKXWsRequest, WsAmendOrderParams, WsCancelAlgoOrderParamsBuilder, WsCancelOrderParams,
+        WsMassCancelParams, WsPostAlgoOrderParams, WsPostOrderParams,
     },
     parse::{
         OrderStateSnapshot, ParsedOrderEvent, parse_algo_order_msg, parse_book_msg_vec,
@@ -172,6 +172,7 @@ pub enum HandlerCommand {
         venue_order_id: Option<VenueOrderId>,
     },
     CancelOrder {
+        params: WsCancelOrderParams,
         client_order_id: Option<ClientOrderId>,
         venue_order_id: Option<VenueOrderId>,
         instrument_id: InstrumentId,
@@ -367,6 +368,7 @@ impl OKXWsFeedHandler {
                             }
                         }
                         HandlerCommand::CancelOrder {
+                            params,
                             client_order_id,
                             venue_order_id,
                             instrument_id,
@@ -375,6 +377,7 @@ impl OKXWsFeedHandler {
                         } => {
                             if let Err(e) = self
                                 .handle_cancel_order(
+                                    params,
                                     client_order_id,
                                     venue_order_id,
                                     instrument_id,
@@ -2212,27 +2215,13 @@ impl OKXWsFeedHandler {
 
     async fn handle_cancel_order(
         &mut self,
+        params: WsCancelOrderParams,
         client_order_id: Option<ClientOrderId>,
         venue_order_id: Option<VenueOrderId>,
         instrument_id: InstrumentId,
         trader_id: TraderId,
         strategy_id: StrategyId,
     ) -> anyhow::Result<()> {
-        let mut builder = WsCancelOrderParamsBuilder::default();
-        builder.inst_id(instrument_id.symbol.as_str());
-
-        if let Some(venue_order_id) = venue_order_id {
-            builder.ord_id(venue_order_id.as_str());
-        }
-
-        if let Some(client_order_id) = client_order_id {
-            builder.cl_ord_id(client_order_id.as_str());
-        }
-
-        let params = builder
-            .build()
-            .map_err(|e| anyhow::anyhow!("Failed to build cancel params: {e}"))?;
-
         let request_id = self.generate_unique_request_id();
 
         // Track pending request if we have a client order ID
@@ -2371,6 +2360,17 @@ impl OKXWsFeedHandler {
     ) -> anyhow::Result<()> {
         let mut builder = WsCancelAlgoOrderParamsBuilder::default();
         builder.inst_id(instrument_id.symbol.as_str());
+
+        let inst_id_code = self
+            .instruments_cache
+            .get(&instrument_id.symbol.inner())
+            .and_then(|inst| inst.inst_id_code())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Missing instIdCode for instrument {instrument_id} when cancelling algo order"
+                )
+            })?;
+        builder.inst_id_code(inst_id_code);
 
         if let Some(client_order_id) = &client_order_id {
             builder.algo_cl_ord_id(client_order_id.as_str());

@@ -47,6 +47,9 @@ pub struct Equity {
     pub id: InstrumentId,
     /// The raw/local/native symbol for the instrument, assigned by the venue.
     pub raw_symbol: Symbol,
+    /// Venue-specific instrument identifier code.
+    #[serde(default)]
+    pub inst_id_code: Option<u64>,
     /// The instruments International Securities Identification Number (ISIN).
     pub isin: Option<Ustr>,
     /// The futures contract currency.
@@ -120,6 +123,7 @@ impl Equity {
         Ok(Self {
             id: instrument_id,
             raw_symbol,
+            inst_id_code: None,
             isin,
             currency,
             price_precision,

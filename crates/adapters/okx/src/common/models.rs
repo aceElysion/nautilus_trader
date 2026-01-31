@@ -32,6 +32,11 @@ pub struct OKXInstrument {
     pub inst_type: OKXInstrumentType,
     /// Instrument ID, e.g. "BTC-USD-SWAP".
     pub inst_id: Ustr,
+    /// Numeric instrument identifier.
+    ///
+    /// When present, this is required by some OKX WebSocket trading operations as `instIdCode`.
+    #[serde(default)]
+    pub inst_id_code: Option<u64>,
     /// Underlying of the instrument, e.g. "BTC-USD". Only applicable to FUTURES/SWAP/OPTION.
     pub uly: Ustr,
     /// Instrument family, e.g. "BTC-USD". Only applicable to FUTURES/SWAP/OPTION.

@@ -1429,7 +1429,7 @@ impl InstrumentParser for SpotInstrumentParser {
         // Parse multiplier as product of ct_mult and ct_val
         let multiplier = parse_multiplier_product(definition)?;
 
-        let instrument = CurrencyPair::new(
+        let mut instrument = CurrencyPair::new(
             common.instrument_id,
             common.raw_symbol,
             base_currency,
@@ -1453,6 +1453,7 @@ impl InstrumentParser for SpotInstrumentParser {
             ts_init,
             ts_init,
         );
+        instrument.inst_id_code = definition.inst_id_code;
 
         Ok(InstrumentAny::CurrencyPair(instrument))
     }
@@ -1561,7 +1562,7 @@ pub fn parse_swap_instrument(
     let max_price = None; // TBD
     let min_price = None; // TBD
 
-    let instrument = CryptoPerpetual::new(
+    let mut instrument = CryptoPerpetual::new(
         instrument_id,
         raw_symbol,
         base_currency,
@@ -1587,6 +1588,7 @@ pub fn parse_swap_instrument(
         ts_init, // No ts_event for response
         ts_init,
     );
+    instrument.inst_id_code = definition.inst_id_code;
 
     Ok(InstrumentAny::CryptoPerpetual(instrument))
 }
@@ -1657,7 +1659,7 @@ pub fn parse_futures_instrument(
     let max_price = None; // TBD
     let min_price = None; // TBD
 
-    let instrument = CryptoFuture::new(
+    let mut instrument = CryptoFuture::new(
         instrument_id,
         raw_symbol,
         underlying,
@@ -1685,6 +1687,7 @@ pub fn parse_futures_instrument(
         ts_init, // No ts_event for response
         ts_init,
     );
+    instrument.inst_id_code = definition.inst_id_code;
 
     Ok(InstrumentAny::CryptoFuture(instrument))
 }
@@ -1752,7 +1755,7 @@ pub fn parse_option_instrument(
     let max_price = None;
     let min_price = None;
 
-    let instrument = CryptoOption::new(
+    let mut instrument = CryptoOption::new(
         instrument_id,
         raw_symbol,
         underlying,
@@ -1782,6 +1785,7 @@ pub fn parse_option_instrument(
         ts_init,
         ts_init,
     );
+    instrument.inst_id_code = definition.inst_id_code;
 
     Ok(InstrumentAny::CryptoOption(instrument))
 }
@@ -3861,6 +3865,7 @@ mod tests {
         let instrument = OKXInstrument {
             inst_type: OKXInstrumentType::Swap,
             inst_id: Ustr::from("ETH-USD_UM-SWAP"),
+            inst_id_code: None,
             uly: Ustr::from(""), // Empty underlying
             inst_family: Ustr::from(""),
             base_ccy: Ustr::from(""),
@@ -3901,6 +3906,7 @@ mod tests {
         let instrument = OKXInstrument {
             inst_type: OKXInstrumentType::Futures,
             inst_id: Ustr::from("ETH-USD_UM-250328"),
+            inst_id_code: None,
             uly: Ustr::from(""), // Empty underlying
             inst_family: Ustr::from(""),
             base_ccy: Ustr::from(""),
@@ -3941,6 +3947,7 @@ mod tests {
         let instrument = OKXInstrument {
             inst_type: OKXInstrumentType::Option,
             inst_id: Ustr::from("BTC-USD-250328-50000-C"),
+            inst_id_code: None,
             uly: Ustr::from(""), // Empty underlying
             inst_family: Ustr::from(""),
             base_ccy: Ustr::from(""),

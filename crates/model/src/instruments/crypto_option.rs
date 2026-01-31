@@ -47,6 +47,9 @@ pub struct CryptoOption {
     pub id: InstrumentId,
     /// The raw/local/native symbol for the instrument, assigned by the venue.
     pub raw_symbol: Symbol,
+    /// Venue-specific instrument identifier code.
+    #[serde(default)]
+    pub inst_id_code: Option<u64>,
     /// The underlying asset.
     pub underlying: Currency,
     /// The contract quote currency.
@@ -161,6 +164,7 @@ impl CryptoOption {
         Ok(Self {
             id: instrument_id,
             raw_symbol,
+            inst_id_code: None,
             underlying,
             quote_currency,
             settlement_currency,

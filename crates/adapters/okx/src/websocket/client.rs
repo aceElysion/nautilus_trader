@@ -356,6 +356,17 @@ impl OKXWebSocketClient {
         }
     }
 
+    fn inst_id_code_from_cache(&self, inst_id: Ustr) -> Result<u64, OKXWsError> {
+        self.instruments_cache
+            .get(&inst_id)
+            .and_then(|v| v.value().inst_id_code())
+            .ok_or_else(|| {
+                OKXWsError::ClientError(format!(
+                    "Missing instIdCode for instrument {inst_id}. Ensure instrument metadata includes instIdCode and has been cached."
+                ))
+            })
+    }
+
     /// Caches a single instrument.
     ///
     /// Any existing instrument with the same symbol will be replaced.
@@ -1913,15 +1924,16 @@ impl OKXWebSocketClient {
         let mut builder = WsPostOrderParamsBuilder::default();
 
         builder.inst_id(instrument_id.symbol.as_str());
+        builder.inst_id_code(self.inst_id_code_from_cache(instrument_id.symbol.inner())?);
         builder.td_mode(td_mode);
         builder.cl_ord_id(client_order_id.as_str());
 
         let instrument = self
             .instruments_cache
             .get(&instrument_id.symbol.inner())
-            .ok_or_else(|| {
-                OKXWsError::ClientError(format!("Unknown instrument {instrument_id}"))
-            })?;
+            .ok_or_else(|| OKXWsError::ClientError(format!("Unknown instrument {instrument_id}")))?
+            .value()
+            .clone();
 
         let instrument_type =
             okx_instrument_type(&instrument).map_err(|e| OKXWsError::ClientError(e.to_string()))?;
@@ -2083,6 +2095,7 @@ impl OKXWebSocketClient {
         let mut builder = WsAmendOrderParamsBuilder::default();
 
         builder.inst_id(instrument_id.symbol.as_str());
+        builder.inst_id_code(self.inst_id_code_from_cache(instrument_id.symbol.inner())?);
 
         if let Some(venue_order_id) = venue_order_id {
             builder.ord_id(venue_order_id.as_str());
@@ -2144,7 +2157,25 @@ impl OKXWebSocketClient {
         client_order_id: Option<ClientOrderId>,
         venue_order_id: Option<VenueOrderId>,
     ) -> Result<(), OKXWsError> {
+        let mut builder = WsCancelOrderParamsBuilder::default();
+        // Note: instType should NOT be included in cancel order requests
+        builder.inst_id(instrument_id.symbol.as_str());
+        builder.inst_id_code(self.inst_id_code_from_cache(instrument_id.symbol.inner())?);
+
+        if let Some(venue_order_id) = venue_order_id.as_ref() {
+            builder.ord_id(venue_order_id.as_str());
+        }
+
+        if let Some(client_order_id) = client_order_id.as_ref() {
+            builder.cl_ord_id(client_order_id.as_str());
+        }
+
+        let params = builder
+            .build()
+            .map_err(|e| OKXWsError::ClientError(format!("Build cancel params error: {e}")))?;
+
         let cmd = HandlerCommand::CancelOrder {
+            params,
             client_order_id,
             venue_order_id,
             instrument_id,
@@ -2214,6 +2245,7 @@ impl OKXWebSocketClient {
             let mut builder = WsPostOrderParamsBuilder::default();
             builder.inst_type(inst_type);
             builder.inst_id(inst_id.symbol.inner());
+            builder.inst_id_code(self.inst_id_code_from_cache(inst_id.symbol.inner())?);
             builder.td_mode(td_mode);
             builder.cl_ord_id(cl_ord_id.as_str());
             builder.side(ord_side);
@@ -2278,6 +2310,7 @@ impl OKXWebSocketClient {
             let mut builder = WsAmendOrderParamsBuilder::default();
             // Note: instType should NOT be included in amend order requests
             builder.inst_id(inst_id.symbol.inner());
+            builder.inst_id_code(self.inst_id_code_from_cache(inst_id.symbol.inner())?);
             builder.cl_ord_id(cl_ord_id.as_str());
             builder.new_cl_ord_id(new_cl_ord_id.as_str());
 
@@ -2322,6 +2355,7 @@ impl OKXWebSocketClient {
             let mut builder = WsCancelOrderParamsBuilder::default();
             // Note: instType should NOT be included in cancel order requests
             builder.inst_id(inst_id.symbol.inner());
+            builder.inst_id_code(self.inst_id_code_from_cache(inst_id.symbol.inner())?);
 
             if let Some(c) = cl_ord_id {
                 builder.cl_ord_id(c.as_str());
@@ -2382,6 +2416,7 @@ impl OKXWebSocketClient {
         }
 
         builder.inst_id(instrument_id.symbol.inner());
+        builder.inst_id_code(self.inst_id_code_from_cache(instrument_id.symbol.inner())?);
         builder.td_mode(td_mode);
         builder.cl_ord_id(client_order_id.as_str());
         builder.side(order_side);
