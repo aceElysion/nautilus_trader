@@ -274,6 +274,7 @@ pub enum OKXInstrumentType {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum OKXInstrumentStatus {
+    Rebase,
     Live,
     Suspend,
     Preopen,
