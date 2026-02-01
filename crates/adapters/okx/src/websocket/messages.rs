@@ -1005,6 +1005,10 @@ pub struct WsPostAlgoOrderParams {
     #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cl_ord_id: Option<String>,
+    /// Algo Client order ID (optional).
+    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub algo_cl_ord_id: Option<String>,
     /// Position side: long, short, net (optional).
     #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]

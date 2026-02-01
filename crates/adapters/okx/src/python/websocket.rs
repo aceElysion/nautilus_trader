@@ -942,6 +942,61 @@ impl OKXWebSocketClient {
         })
     }
 
+    #[pyo3(name = "submit_algo_order")]
+    #[pyo3(signature = (
+        trader_id,
+        strategy_id,
+        instrument_id,
+        td_mode,
+        client_order_id,
+        order_side,
+        order_type,
+        quantity,
+        trigger_price,
+        trigger_type=None,
+        limit_price=None,
+        reduce_only=None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn py_submit_algo_order<'py>(
+        &self,
+        py: Python<'py>,
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+        instrument_id: InstrumentId,
+        td_mode: OKXTradeMode,
+        client_order_id: ClientOrderId,
+        order_side: OrderSide,
+        order_type: OrderType,
+        quantity: Quantity,
+        trigger_price: Price,
+        trigger_type: Option<nautilus_model::enums::TriggerType>,
+        limit_price: Option<Price>,
+        reduce_only: Option<bool>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .submit_algo_order(
+                    trader_id,
+                    strategy_id,
+                    instrument_id,
+                    td_mode,
+                    client_order_id,
+                    order_side,
+                    order_type,
+                    quantity,
+                    trigger_price,
+                    trigger_type,
+                    limit_price,
+                    reduce_only,
+                )
+                .await
+                .map_err(to_pyvalue_err)
+        })
+    }
+
     #[pyo3(name = "cancel_order", signature = (
         trader_id,
         strategy_id,
