@@ -1962,6 +1962,12 @@ impl OKXWebSocketClient {
                 if position_side.is_none() {
                     builder.pos_side(OKXPositionSide::Net);
                 }
+
+                if let Some(ro) = reduce_only
+                    && ro
+                {
+                    builder.reduce_only(ro);
+                }
             }
             _ => {
                 builder.ccy(quote_currency.to_string());
@@ -2419,6 +2425,7 @@ impl OKXWebSocketClient {
         builder.inst_id_code(self.inst_id_code_from_cache(instrument_id.symbol.inner())?);
         builder.td_mode(td_mode);
         builder.cl_ord_id(client_order_id.as_str());
+        builder.algo_cl_ord_id(client_order_id.as_str());
         builder.side(order_side);
         builder.ord_type(
             conditional_order_to_algo_type(order_type)
