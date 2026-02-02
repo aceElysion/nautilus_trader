@@ -541,7 +541,7 @@ pub struct OKXOrderAlgo {
     /// Instrument type.
     pub inst_type: OKXInstrumentType,
     /// Algo order type.
-    pub ord_type: OKXOrderType,
+    pub ord_type: OKXAlgoOrderType,
     /// Current order state.
     pub state: OKXOrderStatus,
     /// Order side.

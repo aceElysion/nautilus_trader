@@ -824,7 +824,7 @@ pub struct OKXAlgoOrderMsg {
     /// Instrument type.
     pub inst_type: OKXInstrumentType,
     /// Order type (always "trigger" for conditional orders).
-    pub ord_type: OKXOrderType,
+    pub ord_type: OKXAlgoOrderType,
     /// Order state.
     pub state: OKXOrderStatus,
     /// Side.
