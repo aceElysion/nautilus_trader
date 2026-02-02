@@ -3046,7 +3046,7 @@ impl OKXHttpClient {
 
         if reduce_only == Some(true) && reduce_type.is_some() {
             let rt = reduce_type.unwrap();
-            let request = OKXPlaceAlgoOrderWithTPSLRequest {
+            let mut request = OKXPlaceAlgoOrderWithTPSLRequest {
                 inst_id: instrument_id.symbol.as_str().to_string(),
                 td_mode,
                 side: okx_side,
