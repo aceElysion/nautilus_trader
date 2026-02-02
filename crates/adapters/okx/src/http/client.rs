@@ -451,6 +451,8 @@ impl OKXRawHttpClient {
                     headers.insert("Content-Type".to_string(), "application/json".to_string());
                 }
 
+                log::debug!("Request: url={}, path={}, body={:?}", url, full_path, body);
+
                 let resp = self
                     .client
                     .request_with_params(
@@ -464,9 +466,7 @@ impl OKXRawHttpClient {
                     )
                     .await?;
 
-                log::debug!(
-                    "url: {url}, Request: params={params:?}, body={body:?}, Response: {resp:?}"
-                );
+                log::debug!("Response: {resp:?}");
 
                 if resp.status.is_success() {
                     let okx_response: OKXResponse<T> =
