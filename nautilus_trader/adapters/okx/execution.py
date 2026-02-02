@@ -1035,7 +1035,7 @@ class OKXExecutionClient(LiveExecutionClient):
         )
 
         if is_conditional:
-            await self._submit_algo_order_websocket(command)
+            await self._submit_algo_order_http(command)
         else:
             await self._submit_order_websocket(command)
 
@@ -1214,6 +1214,8 @@ class OKXExecutionClient(LiveExecutionClient):
                 limit_price=pyo3_limit_price,
                 reduce_only=order.is_reduce_only if order.is_reduce_only else None,
             )
+
+            self._log.debug(f"place_algo_order response: {response}")
 
             if response.get("s_code") and response["s_code"] != "0":
                 raise ValueError(f"OKX API error: {response.get('s_msg', 'Unknown error')}")
