@@ -464,9 +464,7 @@ impl OKXRawHttpClient {
                     )
                     .await?;
 
-                log::debug!(
-                    "url: {url}, Request: params={params:?}, body={body:?}, Response: {resp:?}"
-                );
+                log::debug!("url: {url}, Request: body={body:?}, Response: {resp:?}");
 
                 if resp.status.is_success() {
                     let okx_response: OKXResponse<T> =
