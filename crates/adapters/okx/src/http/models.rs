@@ -739,6 +739,55 @@ pub struct OKXPlaceAlgoOrderRequest {
     pub reduce_only: Option<bool>,
 }
 
+/// Represents the request body for `POST /api/v5/trade/order-algo` with TP/SL parameters.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OKXPlaceAlgoOrderWithTPSLRequest {
+    /// Instrument ID.
+    #[serde(rename = "instId")]
+    pub inst_id: String,
+    /// Trade mode (isolated, cross, cash).
+    #[serde(rename = "tdMode")]
+    pub td_mode: OKXTradeMode,
+    /// Order side (buy, sell).
+    pub side: OKXSide,
+    /// Algo order type (trigger).
+    #[serde(rename = "ordType")]
+    pub ord_type: OKXAlgoOrderType,
+    /// Order size.
+    pub sz: String,
+    /// Client-supplied algo order ID.
+    #[serde(rename = "algoClOrdId", skip_serializing_if = "Option::is_none")]
+    pub algo_cl_ord_id: Option<String>,
+    /// Take-profit trigger price.
+    #[serde(rename = "tpTriggerPx", skip_serializing_if = "Option::is_none")]
+    pub tp_trigger_px: Option<String>,
+    /// Take-profit trigger price type (last, index, mark).
+    #[serde(rename = "tpTriggerPxType", skip_serializing_if = "Option::is_none")]
+    pub tp_trigger_px_type: Option<OKXTriggerType>,
+    /// Take-profit order price.
+    #[serde(rename = "tpOrdPx", skip_serializing_if = "Option::is_none")]
+    pub tp_ord_px: Option<String>,
+    /// Take-profit order kind (condition or limit).
+    #[serde(rename = "tpOrdKind", skip_serializing_if = "Option::is_none")]
+    pub tp_ord_kind: Option<String>,
+    /// Stop-loss trigger price.
+    #[serde(rename = "slTriggerPx", skip_serializing_if = "Option::is_none")]
+    pub sl_trigger_px: Option<String>,
+    /// Stop-loss trigger price type (last, index, mark).
+    #[serde(rename = "slTriggerPxType", skip_serializing_if = "Option::is_none")]
+    pub sl_trigger_px_type: Option<OKXTriggerType>,
+    /// Stop-loss order price.
+    #[serde(rename = "slOrdPx", skip_serializing_if = "Option::is_none")]
+    pub sl_ord_px: Option<String>,
+    /// Whether to cancel TP/SL when position is closed.
+    #[serde(rename = "cxlOnClosePos", skip_serializing_if = "Option::is_none")]
+    pub cxl_on_close_pos: Option<bool>,
+    /// Whether it's a reduce-only order.
+    #[serde(rename = "reduceOnly", skip_serializing_if = "Option::is_none")]
+    pub reduce_only: Option<bool>,
+}
+
 /// Represents the response from `POST /api/v5/trade/order-algo` (place algo order).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

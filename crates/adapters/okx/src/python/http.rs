@@ -493,6 +493,7 @@ impl OKXHttpClient {
         trigger_type=None,
         limit_price=None,
         reduce_only=None,
+        reduce_type=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn py_place_algo_order<'py>(
@@ -510,6 +511,7 @@ impl OKXHttpClient {
         trigger_type: Option<TriggerType>,
         limit_price: Option<Price>,
         reduce_only: Option<bool>,
+        reduce_type: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
 
@@ -529,6 +531,7 @@ impl OKXHttpClient {
                     trigger_type,
                     limit_price,
                     reduce_only,
+                    reduce_type,
                 )
                 .await
                 .map_err(to_pyvalue_err)?;

@@ -1039,79 +1039,6 @@ class OKXExecutionClient(LiveExecutionClient):
         else:
             await self._submit_order_websocket(command)
 
-    async def _submit_algo_order_websocket(self, command: SubmitOrder) -> None:
-        order = command.order
-
-        pyo3_trader_id = nautilus_pyo3.TraderId.from_str(order.trader_id.value)
-        pyo3_strategy_id = nautilus_pyo3.StrategyId.from_str(order.strategy_id.value)
-        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(order.instrument_id.value)
-        pyo3_client_order_id = nautilus_pyo3.ClientOrderId(order.client_order_id.value)
-        pyo3_order_side = order_side_to_pyo3(order.side)
-        pyo3_order_type = order_type_to_pyo3(order.order_type)
-        pyo3_quantity = nautilus_pyo3.Quantity.from_str(str(order.quantity))
-        pyo3_trigger_price = nautilus_pyo3.Price.from_str(str(order.trigger_price))
-
-        pyo3_limit_price = (
-            nautilus_pyo3.Price.from_str(str(order.price)) if order.has_price else None
-        )
-
-        pyo3_trigger_type = (
-            trigger_type_to_pyo3(order.trigger_type) if hasattr(order, "trigger_type") else None
-        )
-
-        td_mode = self._get_trade_mode_for_order(order.instrument_id, command.params)
-
-        try:
-            # Generate OrderSubmitted event here to ensure correct event sequencing
-            self.generate_order_submitted(
-                strategy_id=order.strategy_id,
-                instrument_id=order.instrument_id,
-                client_order_id=order.client_order_id,
-                ts_event=self._clock.timestamp_ns(),
-            )
-
-            # Note: Algo order placement via WebSocket typically goes through the business connection
-            # for OKX, but checking the Rust implementation, it seems to be available on the
-            # standard client if the opcode is correct.
-            # Assuming "algo-order" op code is handled by the regular private connection
-            # where checking account balance etc occurs.
-            # However, historically algo operations might need the business client.
-            # Based on recent changes (algo_cl_ord_id), we use _ws_business_client.
-            # Wait, OKX docs say Place Algo Order is on "Business" channel for some contexts?
-            # Actually, standard trade operations are on private.
-            # We will use _ws_business_client based on context clues or default to _ws_client.
-            # Let's try _ws_business_client as algo subscriptions are there.
-            
-            # Actually, placement is usually on the Trade channel.
-            # Let's use _ws_business_client to be safe if that's where algo ops live,
-            # BUT the user context implies we just updated the main client in Rust.
-            # Let's stick to _ws_business_client if that's what handles algo.
-            # Re-reading: "Algo trading" -> "Business" channel 
-            # (wss://ws.okx.com:8443/ws/v5/business).
-            
-            await self._ws_business_client.submit_algo_order(
-                trader_id=pyo3_trader_id,
-                strategy_id=pyo3_strategy_id,
-                instrument_id=pyo3_instrument_id,
-                td_mode=td_mode,
-                client_order_id=pyo3_client_order_id,
-                order_side=pyo3_order_side,
-                order_type=pyo3_order_type,
-                quantity=pyo3_quantity,
-                trigger_price=pyo3_trigger_price,
-                trigger_type=pyo3_trigger_type,
-                limit_price=pyo3_limit_price,
-                reduce_only=order.is_reduce_only if order.is_reduce_only else None,
-            )
-        except Exception as e:
-            self.generate_order_rejected(
-                strategy_id=order.strategy_id,
-                instrument_id=order.instrument_id,
-                client_order_id=order.client_order_id,
-                reason=str(e),
-                ts_event=self._clock.timestamp_ns(),
-            )
-
     async def _submit_order_websocket(self, command: SubmitOrder) -> None:
         order = command.order
 
@@ -1190,6 +1117,7 @@ class OKXExecutionClient(LiveExecutionClient):
         )
 
         td_mode = self._get_trade_mode_for_order(order.instrument_id, command.params)
+        reduce_type = command.params.get("reduce_type") if command.params else None
 
         try:
             # Generate OrderSubmitted event here to ensure correct event sequencing
@@ -1213,6 +1141,7 @@ class OKXExecutionClient(LiveExecutionClient):
                 trigger_type=pyo3_trigger_type,
                 limit_price=pyo3_limit_price,
                 reduce_only=order.is_reduce_only if order.is_reduce_only else None,
+                reduce_type=reduce_type,
             )
 
             self._log.debug(f"place_algo_order response: {response}")
