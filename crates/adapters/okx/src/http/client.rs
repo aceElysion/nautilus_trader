@@ -3066,21 +3066,21 @@ impl OKXHttpClient {
 
             if rt == "tp" {
                 if order_px == Some("-1".to_string()) {
-                    tpsl_request.tp_trigger_px = Some(trigger_price.to_string());
-                    tpsl_request.tp_trigger_px_type = Some(trigger_px_type_enum);
-                    tpsl_request.tp_ord_px = order_px;
-                    tpsl_request.tp_ord_kind = Some("condition".to_string());
+                    request.tp_trigger_px = Some(trigger_price.to_string());
+                    request.tp_trigger_px_type = Some(trigger_px_type_enum);
+                    request.tp_ord_px = order_px;
+                    request.tp_ord_kind = Some("condition".to_string());
                 } else {
-                    tpsl_request.tp_ord_px = order_px;
-                    tpsl_request.tp_ord_kind = Some("limit".to_string());
+                    request.tp_ord_px = order_px;
+                    request.tp_ord_kind = Some("limit".to_string());
                 }
             } else if rt == "sl" {
-                tpsl_request.sl_trigger_px = Some(trigger_price.to_string());
-                tpsl_request.sl_trigger_px_type = Some(trigger_px_type_enum);
-                tpsl_request.sl_ord_px = order_px;
+                request.sl_trigger_px = Some(trigger_price.to_string());
+                request.sl_trigger_px_type = Some(trigger_px_type_enum);
+                request.sl_ord_px = order_px;
             }
 
-            self.place_algo_order_with_tpsl(tpsl_request).await
+            self.place_algo_order_with_tpsl(request).await
         } else {
             let request = OKXPlaceAlgoOrderRequest {
                 inst_id: instrument_id.symbol.as_str().to_string(),
