@@ -783,7 +783,7 @@ pub struct OKXPlaceAlgoOrderWithTPSLRequest {
     /// Whether to cancel TP/SL when position is closed.
     #[serde(rename = "cxlOnClosePos", skip_serializing_if = "Option::is_none")]
     pub cxl_on_close_pos: Option<bool>,
-    /// Whether it's a reduce-only order.
+    // Whether it's a reduce-only order.
     #[serde(rename = "reduceOnly", skip_serializing_if = "Option::is_none")]
     pub reduce_only: Option<bool>,
 }

@@ -453,7 +453,7 @@ impl OKXRawHttpClient {
 
                 let body_str = body
                     .as_ref()
-                    .map(|b| String::from_utf8_lossy(b).to_string())
+                    .map(|b| String::from_utf8_lossy(b).into_owned())
                     .unwrap_or_else(|| "None".to_string());
                 log::debug!(
                     "Request: url={}, path={}, body={}",
@@ -3083,10 +3083,9 @@ impl OKXHttpClient {
                 inst_id: instrument_id.symbol.as_str().to_string(),
                 td_mode,
                 side: okx_side,
-                ord_type: OKXAlgoOrderType::Conditional, // One-way stop-loss or stop-profit
+                ord_type: OKXAlgoOrderType::Oco, // oco
                 sz: quantity.to_string(),
                 algo_cl_ord_id: Some(client_order_id.as_str().to_string()),
-                reduce_only,
                 tp_trigger_px: tp_trigger_px.map(|p| p.to_string()),
                 tp_trigger_px_type: tp_trigger_px_type.map(Into::into),
                 tp_ord_px: tp_ord_px_final,
@@ -3095,6 +3094,7 @@ impl OKXHttpClient {
                 sl_trigger_px_type: sl_trigger_px_type.map(Into::into),
                 sl_ord_px: sl_ord_px_final,
                 cxl_on_close_pos,
+                reduce_only,
             };
 
             self.place_algo_order_with_tpsl(request).await
