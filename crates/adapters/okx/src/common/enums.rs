@@ -236,7 +236,6 @@ impl From<LiquiditySide> for OKXExecType {
     EnumString,
     Serialize,
     Deserialize,
-    Default,
 )]
 #[serde(rename_all = "UPPERCASE")]
 #[cfg_attr(
@@ -556,6 +555,7 @@ pub enum OKXTakeProfitKind {
     EnumString,
     Serialize,
     Deserialize,
+    Default,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum OKXTriggerType {
