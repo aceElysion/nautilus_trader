@@ -451,7 +451,16 @@ impl OKXRawHttpClient {
                     headers.insert("Content-Type".to_string(), "application/json".to_string());
                 }
 
-                log::debug!("Request: url={}, path={}, body={:?}", url, full_path, body);
+                let body_str = body
+                    .as_ref()
+                    .map(|b| String::from_utf8_lossy(b).to_string())
+                    .unwrap_or_else(|| "None".to_string());
+                log::debug!(
+                    "Request: url={}, path={}, body={}",
+                    url,
+                    full_path,
+                    body_str
+                );
 
                 let resp = self
                     .client
@@ -3024,7 +3033,14 @@ impl OKXHttpClient {
         trigger_type: Option<TriggerType>,
         limit_price: Option<Price>,
         reduce_only: Option<bool>,
-        reduce_type: Option<String>,
+        tp_trigger_px: Option<Price>,
+        tp_trigger_px_type: Option<TriggerType>,
+        tp_ord_px: Option<Price>,
+        tp_ord_kind: Option<String>,
+        sl_trigger_px: Option<Price>,
+        sl_trigger_px_type: Option<TriggerType>,
+        sl_ord_px: Option<Price>,
+        cxl_on_close_pos: Option<bool>,
     ) -> Result<OKXPlaceAlgoOrderResponse, OKXHttpError> {
         if !matches!(order_side, OrderSide::Buy | OrderSide::Sell) {
             return Err(OKXHttpError::ValidationError(
@@ -3044,41 +3060,42 @@ impl OKXHttpClient {
             Some("-1".to_string())
         };
 
-        if reduce_only == Some(true) && reduce_type.is_some() {
-            let rt = reduce_type.unwrap();
-            let mut request = OKXPlaceAlgoOrderWithTPSLRequest {
+        let tp_ord_px_final = if matches!(order_type, OrderType::StopMarket) {
+            Some("-1".to_string())
+        } else if matches!(order_type, OrderType::StopLimit) {
+            tp_ord_px.map(|p| p.to_string())
+        } else {
+            None
+        };
+
+        let sl_ord_px_final = if matches!(order_type, OrderType::StopMarket) {
+            Some("-1".to_string())
+        } else if matches!(order_type, OrderType::StopLimit) {
+            sl_ord_px.map(|p| p.to_string())
+        } else {
+            None
+        };
+
+        if reduce_only == Some(true)
+            && matches!(order_type, OrderType::StopLimit | OrderType::StopMarket)
+        {
+            let request = OKXPlaceAlgoOrderWithTPSLRequest {
                 inst_id: instrument_id.symbol.as_str().to_string(),
                 td_mode,
                 side: okx_side,
                 ord_type: OKXAlgoOrderType::Conditional, // One-way stop-loss or stop-profit
                 sz: quantity.to_string(),
                 algo_cl_ord_id: Some(client_order_id.as_str().to_string()),
-                tp_trigger_px: None,
-                tp_trigger_px_type: None,
-                tp_ord_px: None,
-                tp_ord_kind: None,
-                sl_trigger_px: None,
-                sl_trigger_px_type: None,
-                sl_ord_px: None,
-                cxl_on_close_pos: Some(true), //下单与仓位关联的止盈止损订单
-                reduce_only: Some(true),
+                reduce_only,
+                tp_trigger_px: tp_trigger_px.map(|p| p.to_string()),
+                tp_trigger_px_type: tp_trigger_px_type.map(Into::into),
+                tp_ord_px: tp_ord_px_final,
+                tp_ord_kind,
+                sl_trigger_px: sl_trigger_px.map(|p| p.to_string()),
+                sl_trigger_px_type: sl_trigger_px_type.map(Into::into),
+                sl_ord_px: sl_ord_px_final,
+                cxl_on_close_pos,
             };
-
-            if rt == "tp" {
-                if order_px == Some("-1".to_string()) {
-                    request.tp_trigger_px = Some(trigger_price.to_string());
-                    request.tp_trigger_px_type = Some(trigger_px_type_enum);
-                    request.tp_ord_px = order_px;
-                    request.tp_ord_kind = Some("condition".to_string());
-                } else {
-                    request.tp_ord_px = order_px;
-                    request.tp_ord_kind = Some("limit".to_string());
-                }
-            } else if rt == "sl" {
-                request.sl_trigger_px = Some(trigger_price.to_string());
-                request.sl_trigger_px_type = Some(trigger_px_type_enum);
-                request.sl_ord_px = order_px;
-            }
 
             self.place_algo_order_with_tpsl(request).await
         } else {

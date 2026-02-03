@@ -813,7 +813,6 @@ pub struct OKXAlgoOrderMsg {
     /// Algorithm ID.
     pub algo_id: String,
     /// Algorithm client order ID.
-    #[serde(default)]
     pub algo_cl_ord_id: String,
     /// Client order ID (empty for algo orders until triggered).
     pub cl_ord_id: String,
@@ -822,6 +821,7 @@ pub struct OKXAlgoOrderMsg {
     /// Instrument ID.
     pub inst_id: Ustr,
     /// Instrument type.
+    #[serde(default)]
     pub inst_type: OKXInstrumentType,
     /// Order type (always "trigger" for conditional orders).
     pub ord_type: OKXAlgoOrderType,
@@ -830,16 +830,19 @@ pub struct OKXAlgoOrderMsg {
     /// Side.
     pub side: OKXSide,
     /// Position side.
+    #[serde(default)]
     pub pos_side: OKXPositionSide,
     /// Size.
     pub sz: String,
     /// Trigger price.
     pub trigger_px: String,
     /// Trigger price type (last, mark, index).
+    #[serde(default)]
     pub trigger_px_type: OKXTriggerType,
     /// Order price (-1 for market orders).
     pub ord_px: String,
     /// Trade mode.
+    #[serde(default)]
     pub td_mode: OKXTradeMode,
     /// Leverage.
     pub lever: String,

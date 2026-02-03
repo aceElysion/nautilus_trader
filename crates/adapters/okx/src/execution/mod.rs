@@ -305,6 +305,13 @@ impl OKXExecutionClient {
                     price,
                     Some(is_reduce_only),
                     None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
                 )
                 .await
                 .map_err(|e| anyhow::anyhow!("Submit algo order failed: {e}"));

@@ -1117,7 +1117,24 @@ class OKXExecutionClient(LiveExecutionClient):
         )
 
         td_mode = self._get_trade_mode_for_order(order.instrument_id, command.params)
-        reduce_type = command.params.get("reduce_type") if command.params else None
+
+        # Extract and convert TP/SL parameters from command.params
+        def get_price_param(name):
+            val = command.params.get(name) if command.params else None
+            return nautilus_pyo3.Price.from_str(str(val)) if val is not None else None
+
+        def get_trigger_type_param(name):
+            val = command.params.get(name) if command.params else None
+            return trigger_type_to_pyo3(val) if val is not None else None
+
+        pyo3_tp_trigger_px = get_price_param("tp_trigger_px")
+        pyo3_tp_trigger_px_type = get_trigger_type_param("tp_trigger_px_type")
+        pyo3_tp_ord_px = get_price_param("tp_ord_px")
+        tp_ord_kind = command.params.get("tp_ord_kind") if command.params else None
+        pyo3_sl_trigger_px = get_price_param("sl_trigger_px")
+        pyo3_sl_trigger_px_type = get_trigger_type_param("sl_trigger_px_type")
+        pyo3_sl_ord_px = get_price_param("sl_ord_px")
+        cxl_on_close_pos = command.params.get("cxl_on_close_pos") if command.params else None
 
         try:
             # Generate OrderSubmitted event here to ensure correct event sequencing
@@ -1141,7 +1158,14 @@ class OKXExecutionClient(LiveExecutionClient):
                 trigger_type=pyo3_trigger_type,
                 limit_price=pyo3_limit_price,
                 reduce_only=order.is_reduce_only if order.is_reduce_only else None,
-                reduce_type=reduce_type,
+                tp_trigger_px=pyo3_tp_trigger_px,
+                tp_trigger_px_type=pyo3_tp_trigger_px_type,
+                tp_ord_px=pyo3_tp_ord_px,
+                tp_ord_kind=tp_ord_kind,
+                sl_trigger_px=pyo3_sl_trigger_px,
+                sl_trigger_px_type=pyo3_sl_trigger_px_type,
+                sl_ord_px=pyo3_sl_ord_px,
+                cxl_on_close_pos=cxl_on_close_pos,
             )
 
             self._log.debug(f"place_algo_order response: {response}")
