@@ -1085,7 +1085,11 @@ pub fn parse_algo_order_status_report(
 
     let status: OrderStatus = msg.state.into();
 
-    let quantity = parse_quantity(msg.sz.as_str(), instrument.size_precision())?;
+    let quantity = if msg.sz.is_empty() || msg.sz == "0" {
+        Quantity::zero(instrument.size_precision())
+    } else {
+        parse_quantity(msg.sz.as_str(), instrument.size_precision())?
+    };
 
     // For algo orders, actual_sz represents filled quantity (if any)
     let filled_qty = if msg.actual_sz.is_empty() || msg.actual_sz == "0" {
@@ -1094,10 +1098,17 @@ pub fn parse_algo_order_status_report(
         parse_quantity(msg.actual_sz.as_str(), instrument.size_precision())?
     };
 
-    let trigger_px = parse_price(msg.trigger_px.as_str(), instrument.price_precision())?;
+    let trigger_px = if msg.trigger_px.is_empty() || msg.trigger_px == "0" {
+        None
+    } else {
+        Some(parse_price(
+            msg.trigger_px.as_str(),
+            instrument.price_precision(),
+        )?)
+    };
 
     // Parse limit price if it exists (not -1)
-    let price = if msg.ord_px == "-1" {
+    let price = if msg.ord_px == "-1" || msg.ord_px.is_empty() {
         None
     } else {
         Some(parse_price(
@@ -1130,7 +1141,7 @@ pub fn parse_algo_order_status_report(
         None, // report_id - auto-generated
     );
 
-    report.trigger_price = Some(trigger_px);
+    report.trigger_price = trigger_px;
     report.trigger_type = Some(trigger_type);
 
     if let Some(limit_price) = price {
