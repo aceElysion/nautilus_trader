@@ -3060,9 +3060,9 @@ impl OKXHttpClient {
             Some("-1".to_string())
         };
 
-        let tp_ord_px_final = if matches!(order_type, OrderType::StopMarket) {
+        let tp_ord_px_final = if tp_ord_kind.as_deref() == Some("market") {
             Some("-1".to_string())
-        } else if matches!(order_type, OrderType::StopLimit) {
+        } else if tp_ord_kind.as_deref() == Some("limit") {
             tp_ord_px.map(|p| p.to_string())
         } else {
             None
