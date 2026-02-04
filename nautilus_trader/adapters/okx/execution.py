@@ -1139,7 +1139,7 @@ class OKXExecutionClient(LiveExecutionClient):
         pyo3_sl_trigger_px_type = get_trigger_type_param("sl_trigger_px_type")
         pyo3_sl_ord_px = get_price_param("sl_ord_px")
         cxl_on_close_pos = command.params.get("cxl_on_close_pos") if command.params else None
-        algo_order_type = command.params.get("order_type") if command.params else None
+        algo_order_type = command.params.get("algo_order_type") if command.params else None
 
         try:
             # Generate OrderSubmitted event here to ensure correct event sequencing
