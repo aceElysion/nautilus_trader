@@ -737,28 +737,6 @@ pub struct OKXPlaceAlgoOrderRequest {
     /// Whether it's a reduce-only order.
     #[serde(rename = "reduceOnly", skip_serializing_if = "Option::is_none")]
     pub reduce_only: Option<bool>,
-}
-
-/// Represents the request body for `POST /api/v5/trade/order-algo` with TP/SL parameters.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OKXPlaceAlgoOrderWithTPSLRequest {
-    /// Instrument ID.
-    #[serde(rename = "instId")]
-    pub inst_id: String,
-    /// Trade mode (isolated, cross, cash).
-    #[serde(rename = "tdMode")]
-    pub td_mode: OKXTradeMode,
-    /// Order side (buy, sell).
-    pub side: OKXSide,
-    /// Algo order type (trigger).
-    #[serde(rename = "ordType")]
-    pub ord_type: OKXAlgoOrderType,
-    /// Order size.
-    pub sz: String,
-    /// Client-supplied algo order ID.
-    #[serde(rename = "algoClOrdId", skip_serializing_if = "Option::is_none")]
-    pub algo_cl_ord_id: Option<String>,
     /// Take-profit trigger price.
     #[serde(rename = "tpTriggerPx", skip_serializing_if = "Option::is_none")]
     pub tp_trigger_px: Option<String>,
@@ -783,9 +761,6 @@ pub struct OKXPlaceAlgoOrderWithTPSLRequest {
     /// Whether to cancel TP/SL when position is closed.
     #[serde(rename = "cxlOnClosePos", skip_serializing_if = "Option::is_none")]
     pub cxl_on_close_pos: Option<bool>,
-    // Whether it's a reduce-only order.
-    #[serde(rename = "reduceOnly", skip_serializing_if = "Option::is_none")]
-    pub reduce_only: Option<bool>,
 }
 
 /// Represents the response from `POST /api/v5/trade/order-algo` (place algo order).
@@ -900,6 +875,14 @@ mod tests {
             close_position: None,
             tag: None,
             reduce_only: None,
+            tp_trigger_px: None,
+            tp_trigger_px_type: None,
+            tp_ord_px: None,
+            tp_ord_kind: None,
+            sl_trigger_px: None,
+            sl_trigger_px_type: None,
+            sl_ord_px: None,
+            cxl_on_close_pos: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -936,6 +919,14 @@ mod tests {
             close_position: None,
             tag: None,
             reduce_only: Some(true),
+            tp_trigger_px: None,
+            tp_trigger_px_type: None,
+            tp_ord_px: None,
+            tp_ord_kind: None,
+            sl_trigger_px: None,
+            sl_trigger_px_type: None,
+            sl_ord_px: None,
+            cxl_on_close_pos: None,
         };
 
         // OKX expects an array of requests

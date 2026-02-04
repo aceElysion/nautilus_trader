@@ -30,6 +30,7 @@ from nautilus_trader.common.secure import mask_api_key
 from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.core.datetime import ensure_pydatetime_utc
+from nautilus_trader.core.nautilus_pyo3 import OKXAlgoOrderType
 from nautilus_trader.core.nautilus_pyo3 import OKXInstrumentType
 from nautilus_trader.core.nautilus_pyo3 import OKXMarginMode
 from nautilus_trader.core.nautilus_pyo3 import OKXTradeMode
@@ -1106,7 +1107,11 @@ class OKXExecutionClient(LiveExecutionClient):
         pyo3_order_side = order_side_to_pyo3(order.side)
         pyo3_order_type = order_type_to_pyo3(order.order_type)
         pyo3_quantity = nautilus_pyo3.Quantity.from_str(str(order.quantity))
-        pyo3_trigger_price = nautilus_pyo3.Price.from_str(str(order.trigger_price))
+        pyo3_trigger_price = (
+            nautilus_pyo3.Price.from_str(str(order.trigger_price))
+            if order.trigger_price > 0
+            else None
+        )
 
         pyo3_limit_price = (
             nautilus_pyo3.Price.from_str(str(order.price)) if order.has_price else None
@@ -1135,6 +1140,9 @@ class OKXExecutionClient(LiveExecutionClient):
         pyo3_sl_trigger_px_type = get_trigger_type_param("sl_trigger_px_type")
         pyo3_sl_ord_px = get_price_param("sl_ord_px")
         cxl_on_close_pos = command.params.get("cxl_on_close_pos") if command.params else None
+        algo_order_type = command.params.get("order_type") if command.params else None
+        if isinstance(algo_order_type, str):
+            algo_order_type = getattr(OKXAlgoOrderType, algo_order_type.upper(), None)
 
         try:
             # Generate OrderSubmitted event here to ensure correct event sequencing
@@ -1166,6 +1174,7 @@ class OKXExecutionClient(LiveExecutionClient):
                 sl_trigger_px_type=pyo3_sl_trigger_px_type,
                 sl_ord_px=pyo3_sl_ord_px,
                 cxl_on_close_pos=cxl_on_close_pos,
+                algo_order_type=algo_order_type,
             )
 
             self._log.debug(f"place_algo_order response: {response}")

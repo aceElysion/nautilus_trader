@@ -74,8 +74,8 @@ use super::{
     models::{
         OKXAccount, OKXCancelAlgoOrderRequest, OKXCancelAlgoOrderResponse, OKXFeeRate,
         OKXIndexTicker, OKXMarkPrice, OKXOrderAlgo, OKXOrderHistory, OKXPlaceAlgoOrderRequest,
-        OKXPlaceAlgoOrderResponse, OKXPlaceAlgoOrderWithTPSLRequest, OKXPosition,
-        OKXPositionHistory, OKXPositionTier, OKXServerTime, OKXTransactionDetail,
+        OKXPlaceAlgoOrderResponse, OKXPosition, OKXPositionHistory, OKXPositionTier, OKXServerTime,
+        OKXTransactionDetail,
     },
     query::{
         GetAlgoOrdersParams, GetAlgoOrdersParamsBuilder, GetCandlesticksParams,
@@ -2949,35 +2949,6 @@ impl OKXHttpClient {
             .ok_or_else(|| OKXHttpError::ValidationError("Empty response".to_string()))
     }
 
-    /// Places an algo order with TP/SL via HTTP.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the HTTP request fails or if the response body
-    /// cannot be parsed into [`OKXPlaceAlgoOrderResponse`].
-    pub async fn place_algo_order_with_tpsl(
-        &self,
-        request: OKXPlaceAlgoOrderWithTPSLRequest,
-    ) -> Result<OKXPlaceAlgoOrderResponse, OKXHttpError> {
-        let body =
-            serde_json::to_vec(&request).map_err(|e| OKXHttpError::JsonError(e.to_string()))?;
-
-        let resp: Vec<OKXPlaceAlgoOrderResponse> = self
-            .inner
-            .send_request::<_, ()>(
-                Method::POST,
-                "/api/v5/trade/order-algo",
-                None,
-                Some(body),
-                true,
-            )
-            .await?;
-
-        resp.into_iter()
-            .next()
-            .ok_or_else(|| OKXHttpError::ValidationError("Empty response".to_string()))
-    }
-
     /// Cancels an algo order via HTTP.
     ///
     /// # Errors
@@ -3029,7 +3000,7 @@ impl OKXHttpClient {
         order_side: OrderSide,
         order_type: OrderType,
         quantity: Quantity,
-        trigger_price: Price,
+        trigger_price: Option<Price>,
         trigger_type: Option<TriggerType>,
         limit_price: Option<Price>,
         reduce_only: Option<bool>,
@@ -3041,6 +3012,7 @@ impl OKXHttpClient {
         sl_trigger_px_type: Option<TriggerType>,
         sl_ord_px: Option<Price>,
         cxl_on_close_pos: Option<bool>,
+        algo_order_type: Option<OKXAlgoOrderType>,
     ) -> Result<OKXPlaceAlgoOrderResponse, OKXHttpError> {
         if !matches!(order_side, OrderSide::Buy | OrderSide::Sell) {
             return Err(OKXHttpError::ValidationError(
@@ -3076,47 +3048,35 @@ impl OKXHttpClient {
             None
         };
 
-        if reduce_only == Some(true)
-            && matches!(order_type, OrderType::StopLimit | OrderType::StopMarket)
-        {
-            let request = OKXPlaceAlgoOrderWithTPSLRequest {
-                inst_id: instrument_id.symbol.as_str().to_string(),
-                td_mode,
-                side: okx_side,
-                ord_type: OKXAlgoOrderType::Oco, // oco
-                sz: quantity.to_string(),
-                algo_cl_ord_id: Some(client_order_id.as_str().to_string()),
-                tp_trigger_px: tp_trigger_px.map(|p| p.to_string()),
-                tp_trigger_px_type: tp_trigger_px_type.map(Into::into),
-                tp_ord_px: tp_ord_px_final,
-                tp_ord_kind,
-                sl_trigger_px: sl_trigger_px.map(|p| p.to_string()),
-                sl_trigger_px_type: sl_trigger_px_type.map(Into::into),
-                sl_ord_px: sl_ord_px_final,
-                cxl_on_close_pos,
-                reduce_only,
-            };
+        // Determine the algorithm order type
+        let ord_type = algo_order_type.unwrap_or(OKXAlgoOrderType::Trigger);
 
-            self.place_algo_order_with_tpsl(request).await
-        } else {
-            let request = OKXPlaceAlgoOrderRequest {
-                inst_id: instrument_id.symbol.as_str().to_string(),
-                td_mode,
-                side: okx_side,
-                ord_type: OKXAlgoOrderType::Trigger, // All conditional orders use 'trigger' type
-                sz: quantity.to_string(),
-                algo_cl_ord_id: Some(client_order_id.as_str().to_string()),
-                trigger_px: Some(trigger_price.to_string()),
-                order_px,
-                trigger_px_type: Some(trigger_px_type_enum),
-                tgt_ccy: None,  // Let OKX determine based on instrument
-                pos_side: None, // Use default position side
-                close_position: None,
-                tag: Some(OKX_NAUTILUS_BROKER_ID.to_string()),
-                reduce_only,
-            };
-            self.place_algo_order(request).await
-        }
+        let request = OKXPlaceAlgoOrderRequest {
+            inst_id: instrument_id.symbol.as_str().to_string(),
+            td_mode,
+            side: okx_side,
+            ord_type,
+            sz: quantity.to_string(),
+            algo_cl_ord_id: Some(client_order_id.as_str().to_string()),
+            trigger_px: trigger_price.map(|p| p.to_string()),
+            order_px,
+            trigger_px_type: trigger_price.map(|_| trigger_px_type_enum),
+            tgt_ccy: None,
+            pos_side: None,
+            close_position: None,
+            tag: Some(OKX_NAUTILUS_BROKER_ID.to_string()),
+            reduce_only,
+            tp_trigger_px: tp_trigger_px.map(|p| p.to_string()),
+            tp_trigger_px_type: tp_trigger_px_type.map(Into::into),
+            tp_ord_px: tp_ord_px_final,
+            tp_ord_kind,
+            sl_trigger_px: sl_trigger_px.map(|p| p.to_string()),
+            sl_trigger_px_type: sl_trigger_px_type.map(Into::into),
+            sl_ord_px: sl_ord_px_final,
+            cxl_on_close_pos,
+        };
+
+        self.place_algo_order(request).await
     }
 
     /// Cancels an algo order using domain types.
