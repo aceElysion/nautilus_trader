@@ -3004,13 +3004,13 @@ impl OKXHttpClient {
         trigger_type: Option<TriggerType>,
         limit_price: Option<Price>,
         reduce_only: Option<bool>,
-        tp_trigger_px: Option<Price>,
-        tp_trigger_px_type: Option<TriggerType>,
-        tp_ord_px: Option<Price>,
-        tp_ord_kind: Option<String>,
-        sl_trigger_px: Option<Price>,
-        sl_trigger_px_type: Option<TriggerType>,
-        sl_ord_px: Option<Price>,
+        tp_trigger_price: Option<Price>,
+        tp_trigger_type: Option<TriggerType>,
+        tp_order_price: Option<Price>,
+        tp_order_kind: Option<String>,
+        sl_trigger_price: Option<Price>,
+        sl_trigger_type: Option<TriggerType>,
+        sl_order_price: Option<Price>,
         cxl_on_close_pos: Option<bool>,
         algo_order_type: Option<OKXAlgoOrderType>,
     ) -> Result<OKXPlaceAlgoOrderResponse, OKXHttpError> {
@@ -3020,60 +3020,99 @@ impl OKXHttpClient {
             ));
         }
         let okx_side: OKXSide = order_side.into();
-
-        // Map trigger type to OKX format
-        let trigger_px_type_enum = trigger_type.map_or(OKXTriggerType::Last, Into::into);
-
-        // Determine order price based on order type
-        let order_px = if matches!(order_type, OrderType::StopLimit | OrderType::LimitIfTouched) {
-            limit_price.map(|p| p.to_string())
-        } else {
-            // Market orders use -1 to indicate market execution
-            Some("-1".to_string())
-        };
-
-        let tp_ord_px_final = if tp_ord_kind.as_deref() == Some("market") {
-            Some("-1".to_string())
-        } else if tp_ord_kind.as_deref() == Some("limit") {
-            tp_ord_px.map(|p| p.to_string())
-        } else {
-            None
-        };
-
-        let sl_ord_px_final = if matches!(order_type, OrderType::StopMarket) {
-            Some("-1".to_string())
-        } else if matches!(order_type, OrderType::StopLimit) {
-            sl_ord_px.map(|p| p.to_string())
-        } else {
-            None
-        };
-
         // Determine the algorithm order type
         let ord_type = algo_order_type.unwrap_or(OKXAlgoOrderType::Trigger);
 
+        let mut trigger_px = None;
+        let mut trigger_px_type = None;
+        let mut order_px = None;
+        let mut tp_trigger_px = None;
+        let mut tp_trigger_px_type = None;
+        let mut tp_ord_px = None;
+        let mut tp_ord_kind = None;
+        let mut sl_trigger_px = None;
+        let mut sl_trigger_px_type = None;
+        let mut sl_ord_px = None;
+        let mut cxl_on_close = None;
+
+        match ord_type {
+            OKXAlgoOrderType::Oco | OKXAlgoOrderType::Conditional => {
+                if tp_order_kind.as_ref().map_or(false, |s| !s.is_empty()) {
+                    // Determine take profit order price based on order type
+                    let (tp_order_px, tp_order_kind_final) =
+                        if tp_order_kind.as_deref() == Some("limit") {
+                            // limit
+                            (
+                                tp_order_price.map(|p| p.to_string()),
+                                Some("limit".to_string()),
+                            )
+                        } else {
+                            // condition
+                            (Some("-1".to_string()), Some("condition".to_string()))
+                        };
+
+                    tp_trigger_px = tp_trigger_price.map(|p| p.to_string());
+                    tp_trigger_px_type =
+                        Some(tp_trigger_type.map_or(OKXTriggerType::Last, OKXTriggerType::from));
+                    tp_ord_px = tp_order_px;
+                    tp_ord_kind = tp_order_kind_final;
+                }
+
+                if sl_trigger_price.is_some() {
+                    // Determine stop loss order price based on order type
+                    let sl_order_px =
+                        if matches!(order_type, OrderType::StopLimit | OrderType::LimitIfTouched) {
+                            sl_order_price.map(|p| p.to_string())
+                        } else {
+                            Some("-1".to_string())
+                        };
+
+                    sl_trigger_px = sl_trigger_price.map(|p| p.to_string());
+                    sl_trigger_px_type =
+                        Some(sl_trigger_type.map_or(OKXTriggerType::Last, OKXTriggerType::from));
+                    sl_ord_px = sl_order_px;
+                }
+
+                cxl_on_close = cxl_on_close_pos;
+            }
+            // trigger or default
+            OKXAlgoOrderType::Trigger | _ => {
+                trigger_px = trigger_price.map(|p| p.to_string());
+                trigger_px_type =
+                    Some(trigger_type.map_or(OKXTriggerType::Last, OKXTriggerType::from));
+                order_px = if matches!(order_type, OrderType::StopLimit | OrderType::LimitIfTouched)
+                {
+                    limit_price.map(|p| p.to_string())
+                } else {
+                    // Market orders use -1 to indicate market execution
+                    Some("-1".to_string())
+                };
+            }
+        }
+
         let request = OKXPlaceAlgoOrderRequest {
             inst_id: instrument_id.symbol.as_str().to_string(),
-            td_mode,
+            td_mode: td_mode,
             side: okx_side,
-            ord_type,
+            ord_type: ord_type,
             sz: quantity.to_string(),
             algo_cl_ord_id: Some(client_order_id.as_str().to_string()),
-            trigger_px: trigger_price.map(|p| p.to_string()),
-            order_px,
-            trigger_px_type: trigger_price.map(|_| trigger_px_type_enum),
+            trigger_px: trigger_px,
+            order_px: order_px,
+            trigger_px_type: trigger_px_type,
             tgt_ccy: None,
             pos_side: None,
             close_position: None,
             tag: Some(OKX_NAUTILUS_BROKER_ID.to_string()),
-            reduce_only,
-            tp_trigger_px: tp_trigger_px.map(|p| p.to_string()),
-            tp_trigger_px_type: tp_trigger_px_type.map(Into::into),
-            tp_ord_px: tp_ord_px_final,
-            tp_ord_kind,
-            sl_trigger_px: sl_trigger_px.map(|p| p.to_string()),
-            sl_trigger_px_type: sl_trigger_px_type.map(Into::into),
-            sl_ord_px: sl_ord_px_final,
-            cxl_on_close_pos,
+            reduce_only: reduce_only,
+            tp_trigger_px: tp_trigger_px,
+            tp_trigger_px_type: tp_trigger_px_type,
+            tp_ord_px: tp_ord_px,
+            tp_ord_kind: tp_ord_kind,
+            sl_trigger_px: sl_trigger_px,
+            sl_trigger_px_type: sl_trigger_px_type,
+            sl_ord_px: sl_ord_px,
+            cxl_on_close_pos: cxl_on_close,
         };
 
         self.place_algo_order(request).await
