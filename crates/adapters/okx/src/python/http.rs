@@ -31,7 +31,9 @@ use pyo3::{
 };
 
 use crate::{
-    common::enums::{OKXInstrumentType, OKXOrderStatus, OKXPositionMode, OKXTradeMode},
+    common::enums::{
+        OKXAlgoOrderType, OKXInstrumentType, OKXOrderStatus, OKXPositionMode, OKXTradeMode,
+    },
     http::{client::OKXHttpClient, error::OKXHttpError},
 };
 
