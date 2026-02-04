@@ -30,7 +30,6 @@ from nautilus_trader.common.secure import mask_api_key
 from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.core.datetime import ensure_pydatetime_utc
-from nautilus_trader.core.nautilus_pyo3 import OKXAlgoOrderType
 from nautilus_trader.core.nautilus_pyo3 import OKXInstrumentType
 from nautilus_trader.core.nautilus_pyo3 import OKXMarginMode
 from nautilus_trader.core.nautilus_pyo3 import OKXTradeMode
@@ -1141,8 +1140,6 @@ class OKXExecutionClient(LiveExecutionClient):
         pyo3_sl_ord_px = get_price_param("sl_ord_px")
         cxl_on_close_pos = command.params.get("cxl_on_close_pos") if command.params else None
         algo_order_type = command.params.get("order_type") if command.params else None
-        if isinstance(algo_order_type, str):
-            algo_order_type = getattr(OKXAlgoOrderType, algo_order_type.upper(), None)
 
         try:
             # Generate OrderSubmitted event here to ensure correct event sequencing

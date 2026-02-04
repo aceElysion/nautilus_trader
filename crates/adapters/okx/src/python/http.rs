@@ -15,6 +15,8 @@
 
 //! Python bindings exposing OKX HTTP helper functions and data conversions.
 
+use std::str::FromStr;
+
 use chrono::{DateTime, Utc};
 use nautilus_core::python::{IntoPyObjectNautilusExt, to_pyruntime_err, to_pyvalue_err};
 use nautilus_model::{
@@ -529,9 +531,18 @@ impl OKXHttpClient {
         sl_trigger_px_type: Option<TriggerType>,
         sl_ord_px: Option<Price>,
         cxl_on_close_pos: Option<bool>,
-        algo_order_type: Option<OKXAlgoOrderType>,
+        algo_order_type: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
+
+        let algo_order_type = if let Some(s) = algo_order_type {
+            Some(
+                OKXAlgoOrderType::from_str(&s)
+                    .map_err(|_| to_pyvalue_err("Invalid algo_order_type"))?,
+            )
+        } else {
+            None
+        };
 
         // Accept trader_id and strategy_id for interface standardization
         let _ = (trader_id, strategy_id);
