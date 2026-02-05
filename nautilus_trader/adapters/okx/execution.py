@@ -1253,6 +1253,17 @@ class OKXExecutionClient(LiveExecutionClient):
             )
             return
 
+        # Check if this is an algo order - route to HTTP amend if so
+        canonical_client_order_id = self._canonical_client_order_id(command.client_order_id)
+        alias_lookup_key = canonical_client_order_id or command.client_order_id
+        algo_id = self._algo_order_ids.get(alias_lookup_key)
+
+        if algo_id:
+            await self._amend_algo_order_http(command, order, algo_id)
+        else:
+            await self._modify_order_websocket(command, order)
+
+    async def _modify_order_websocket(self, command: ModifyOrder, order: Order) -> None:
         pyo3_trader_id = nautilus_pyo3.TraderId.from_str(order.trader_id.value)
         pyo3_strategy_id = nautilus_pyo3.StrategyId.from_str(order.strategy_id.value)
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
@@ -1287,6 +1298,112 @@ class OKXExecutionClient(LiveExecutionClient):
                 quantity=pyo3_quantity,
                 client_order_id=pyo3_client_order_id,
                 venue_order_id=pyo3_venue_order_id,
+            )
+        except Exception as e:
+            self.generate_order_modify_rejected(
+                strategy_id=order.strategy_id,
+                instrument_id=order.instrument_id,
+                client_order_id=order.client_order_id,
+                venue_order_id=order.venue_order_id,
+                reason=str(e),
+                ts_event=self._clock.timestamp_ns(),
+            )
+
+    async def _amend_algo_order_http(
+        self,
+        command: ModifyOrder,
+        order: Order,
+        algo_id: str,
+    ) -> None:
+        """Amend an algo order via HTTP REST API.
+
+        Parameters
+        ----------
+        command : ModifyOrder
+            The modify order command.
+        order : Order
+            The order to modify.
+        algo_id : str
+            The OKX algo order ID.
+
+        """
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(order.instrument_id.value)
+
+        # Convert command parameters to pyo3 types
+        pyo3_new_sz = (
+            nautilus_pyo3.Quantity.from_str(str(command.quantity)) if command.quantity else None
+        )
+
+        # Extract additional amend parameters from command.params if available
+        def get_price_param(name):
+            val = command.params.get(name) if command.params else None
+            return nautilus_pyo3.Price.from_str(str(val)) if val is not None else None
+
+        def get_trigger_type_param(name):
+            val = command.params.get(name) if command.params else None
+            return trigger_type_to_pyo3(val) if val is not None else None
+
+        # For trigger orders
+        pyo3_new_trigger_px = (
+            nautilus_pyo3.Price.from_str(str(command.trigger_price))
+            if command.trigger_price is not None
+            else None
+        )
+        pyo3_new_ord_px = (
+            nautilus_pyo3.Price.from_str(str(command.price))
+            if command.price is not None
+            else None
+        )
+        pyo3_new_trigger_px_type = get_trigger_type_param("new_trigger_px_type")
+        # For tp trigger orders
+        pyo3_new_tp_trigger_px = get_price_param("new_tp_trigger_px")
+        pyo3_new_tp_trigger_px_type = get_trigger_type_param("new_tp_trigger_px_type")
+        pyo3_new_tp_ord_px = get_price_param("new_tp_ord_px")
+        # For sl trigger orders
+        pyo3_new_sl_trigger_px = get_price_param("new_sl_trigger_px")
+        pyo3_new_sl_trigger_px_type = get_trigger_type_param("new_sl_trigger_px_type")
+        pyo3_new_sl_ord_px = get_price_param("new_sl_ord_px")
+
+        req_id = command.params.get("req_id") if command.params else None
+
+        self._log.debug(
+            f"Amending OKX algo order using algo_id {algo_id} "
+            f"for {command.client_order_id!r}",
+        )
+
+        try:
+            response = await self._http_client.amend_algo_order(
+                instrument_id=pyo3_instrument_id,
+                algo_id=algo_id,
+                algo_cl_ord_id=command.client_order_id.value,
+                req_id=req_id,
+                new_sz=pyo3_new_sz,
+                new_trigger_px=pyo3_new_trigger_px,
+                new_ord_px=pyo3_new_ord_px,
+                new_trigger_px_type=pyo3_new_trigger_px_type,
+                new_tp_trigger_px=pyo3_new_tp_trigger_px,
+                new_tp_trigger_px_type=pyo3_new_tp_trigger_px_type,
+                new_tp_ord_px=pyo3_new_tp_ord_px,
+                new_sl_trigger_px=pyo3_new_sl_trigger_px,
+                new_sl_trigger_px_type=pyo3_new_sl_trigger_px_type,
+                new_sl_ord_px=pyo3_new_sl_ord_px,
+            )
+
+            self._log.debug(f"amend_algo_order response: {response}")
+
+            if response.get("s_code") and response["s_code"] != "0":
+                raise ValueError(f"OKX API error: {response.get('s_msg', 'Unknown error')}")
+
+            # Generate order updated event
+            self.generate_order_updated(
+                strategy_id=order.strategy_id,
+                instrument_id=order.instrument_id,
+                client_order_id=order.client_order_id,
+                venue_order_id=order.venue_order_id,
+                quantity=command.quantity or order.quantity,
+                price=command.price or order.price,
+                trigger_price=command.trigger_price or order.trigger_price,
+                ts_event=self._clock.timestamp_ns(),
             )
         except Exception as e:
             self.generate_order_modify_rejected(

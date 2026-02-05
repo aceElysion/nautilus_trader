@@ -622,6 +622,85 @@ impl OKXHttpClient {
         })
     }
 
+    #[pyo3(name = "amend_algo_order")]
+    #[pyo3(signature = (
+        instrument_id,
+        algo_id=None,
+        algo_cl_ord_id=None,
+        req_id=None,
+        new_sz=None,
+        new_tp_trigger_px=None,
+        new_tp_ord_px=None,
+        new_sl_trigger_px=None,
+        new_sl_ord_px=None,
+        new_tp_trigger_px_type=None,
+        new_sl_trigger_px_type=None,
+        new_trigger_px=None,
+        new_ord_px=None,
+        new_trigger_px_type=None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn py_amend_algo_order<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: InstrumentId,
+        algo_id: Option<String>,
+        algo_cl_ord_id: Option<String>,
+        req_id: Option<String>,
+        new_sz: Option<Quantity>,
+        new_tp_trigger_px: Option<Price>,
+        new_tp_ord_px: Option<Price>,
+        new_sl_trigger_px: Option<Price>,
+        new_sl_ord_px: Option<Price>,
+        new_tp_trigger_px_type: Option<TriggerType>,
+        new_sl_trigger_px_type: Option<TriggerType>,
+        new_trigger_px: Option<Price>,
+        new_ord_px: Option<Price>,
+        new_trigger_px_type: Option<TriggerType>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let resp = client
+                .amend_algo_order_with_domain_types(
+                    instrument_id,
+                    algo_id,
+                    algo_cl_ord_id,
+                    req_id,
+                    new_sz,
+                    new_tp_trigger_px,
+                    new_tp_ord_px,
+                    new_sl_trigger_px,
+                    new_sl_ord_px,
+                    new_tp_trigger_px_type,
+                    new_sl_trigger_px_type,
+                    new_trigger_px,
+                    new_ord_px,
+                    new_trigger_px_type,
+                )
+                .await
+                .map_err(to_pyvalue_err)?;
+
+            Python::attach(|py| {
+                let dict = PyDict::new(py);
+                dict.set_item("algo_id", resp.algo_id)?;
+                if let Some(algo_cl_ord_id) = resp.algo_cl_ord_id {
+                    dict.set_item("algo_cl_ord_id", algo_cl_ord_id)?;
+                }
+                if let Some(req_id) = resp.req_id {
+                    dict.set_item("req_id", req_id)?;
+                }
+                if let Some(s_code) = resp.s_code {
+                    dict.set_item("s_code", s_code)?;
+                }
+                if let Some(s_msg) = resp.s_msg {
+                    dict.set_item("s_msg", s_msg)?;
+                }
+                Ok(dict.into_py_any_unwrap(py))
+            })
+        })
+    }
+
     #[pyo3(name = "get_server_time")]
     fn py_get_server_time<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
