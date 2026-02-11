@@ -1401,8 +1401,8 @@ class OKXExecutionClient(LiveExecutionClient):
                 client_order_id=order.client_order_id,
                 venue_order_id=order.venue_order_id,
                 quantity=command.quantity or order.quantity,
-                price=command.price or order.price,
-                trigger_price=command.trigger_price or order.trigger_price,
+                price=command.price if command.price else (order.price if order.has_price else None),
+                trigger_price=command.trigger_price if command.trigger_price else (order.trigger_price if order.has_trigger_price else None),
                 ts_event=self._clock.timestamp_ns(),
             )
         except Exception as e:

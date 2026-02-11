@@ -705,8 +705,14 @@ pub fn parse_quote_msg(
     size_precision: u8,
     ts_init: UnixNanos,
 ) -> anyhow::Result<QuoteTick> {
-    let best_bid: &OrderBookEntry = &msg.bids[0];
-    let best_ask: &OrderBookEntry = &msg.asks[0];
+    let best_bid: &OrderBookEntry = msg
+        .bids
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("Cannot parse quote: bids array is empty"))?;
+    let best_ask: &OrderBookEntry = msg
+        .asks
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("Cannot parse quote: asks array is empty"))?;
 
     let bid_price = parse_price(&best_bid.price, price_precision)?;
     let ask_price = parse_price(&best_ask.price, price_precision)?;
