@@ -18,10 +18,10 @@
 use std::{borrow::Cow, str::FromStr};
 
 use chrono::{DateTime, Utc};
-use nautilus_core::{nanos::UnixNanos, uuid::UUID4};
+use nautilus_core::{Params, nanos::UnixNanos, uuid::UUID4};
 use nautilus_model::{
     data::bar::BarType,
-    enums::{AccountType, AggressorSide, CurrencyType, LiquiditySide, PositionSide},
+    enums::{AccountType, AggressorSide, CurrencyType, LiquiditySide, PositionSide, TriggerType},
     events::AccountState,
     identifiers::{AccountId, InstrumentId, Symbol},
     instruments::{Instrument, InstrumentAny},
@@ -36,7 +36,7 @@ use ustr::Ustr;
 use crate::{
     common::{
         consts::BITMEX_VENUE,
-        enums::{BitmexLiquidityIndicator, BitmexSide},
+        enums::{BitmexExecInstruction, BitmexLiquidityIndicator, BitmexPegPriceType, BitmexSide},
     },
     websocket::messages::BitmexMarginMsg,
 };
@@ -47,6 +47,24 @@ use crate::{
 #[must_use]
 pub fn clean_reason(reason: &str) -> String {
     reason.replace("\nNautilusTrader", "").trim().to_string()
+}
+
+/// Extracts the trigger type from BitMEX exec instructions.
+#[must_use]
+pub fn extract_trigger_type(exec_inst: Option<&Vec<BitmexExecInstruction>>) -> TriggerType {
+    if let Some(exec_insts) = exec_inst {
+        if exec_insts.contains(&BitmexExecInstruction::MarkPrice) {
+            TriggerType::MarkPrice
+        } else if exec_insts.contains(&BitmexExecInstruction::IndexPrice) {
+            TriggerType::IndexPrice
+        } else if exec_insts.contains(&BitmexExecInstruction::LastPrice) {
+            TriggerType::LastPrice
+        } else {
+            TriggerType::Default
+        }
+    } else {
+        TriggerType::Default
+    }
 }
 
 /// Parses a Nautilus instrument ID from the given BitMEX `symbol` value.
@@ -139,6 +157,7 @@ pub fn derive_contract_decimal_and_increment(
 
     let mut contract_decimal = Decimal::from_str(&contract_size.to_string())
         .map_err(|_| anyhow::anyhow!("Invalid contract size {contract_size}"))?;
+
     if contract_decimal.scale() > max_scale {
         contract_decimal = contract_decimal
             .round_dp_with_strategy(max_scale, RoundingStrategy::MidpointAwayFromZero);
@@ -329,25 +348,15 @@ pub fn map_bitmex_currency(bitmex_currency: &str) -> Cow<'static, str> {
     }
 }
 
-/// Parses a BitMEX margin message into a Nautilus account state.
-///
-/// # Errors
-///
-/// Returns an error if the margin data cannot be parsed into valid balance values.
-pub fn parse_account_state(
-    margin: &BitmexMarginMsg,
-    account_id: AccountId,
-    ts_init: UnixNanos,
-) -> anyhow::Result<AccountState> {
+/// Parses a BitMEX margin message into a Nautilus account balance.
+pub fn parse_account_balance(margin: &BitmexMarginMsg) -> AccountBalance {
     log::debug!(
-        "Parsing margin: currency={}, wallet_balance={:?}, available_margin={:?}, init_margin={:?}, maint_margin={:?}, foreign_margin_balance={:?}, foreign_requirement={:?}",
+        "Parsing margin: currency={}, wallet_balance={:?}, available_margin={:?}, init_margin={:?}, maint_margin={:?}",
         margin.currency,
         margin.wallet_balance,
         margin.available_margin,
         margin.init_margin,
         margin.maint_margin,
-        margin.foreign_margin_balance,
-        margin.foreign_requirement
     );
 
     let currency_str = map_bitmex_currency(&margin.currency);
@@ -367,13 +376,11 @@ pub fn parse_account_state(
         }
     };
 
-    // BitMEX returns values in satoshis for BTC (XBt) or microunits for USDT/LAMp
-    let divisor = if margin.currency == "XBt" {
-        100_000_000.0 // Satoshis to BTC
-    } else if margin.currency == "USDt" || margin.currency == "LAMp" {
-        1_000_000.0 // Microunits to units
-    } else {
-        1.0
+    // BitMEX returns values in satoshis for BTC (XBt) or microunits for stablecoins
+    let divisor = match margin.currency.as_str() {
+        "XBt" => 100_000_000.0,                              // Satoshis to BTC
+        "USDt" | "LAMp" | "MAMUSd" | "RLUSd" => 1_000_000.0, // Microunits to units
+        _ => 1.0,
     };
 
     // Wallet balance is the actual asset amount
@@ -420,7 +427,20 @@ pub fn parse_account_state(
     // Locked is what's being used for margin
     let locked = total - free;
 
-    let balance = AccountBalance::new(total, locked, free);
+    AccountBalance::new(total, locked, free)
+}
+
+/// Parses a BitMEX margin message into a Nautilus account state.
+///
+/// # Errors
+///
+/// Returns an error if the margin data cannot be parsed into valid balance values.
+pub fn parse_account_state(
+    margin: &BitmexMarginMsg,
+    account_id: AccountId,
+    ts_init: UnixNanos,
+) -> anyhow::Result<AccountState> {
+    let balance = parse_account_balance(margin);
     let balances = vec![balance];
 
     // Skip margin details - BitMEX uses account-level cross-margin which doesn't map
@@ -444,6 +464,37 @@ pub fn parse_account_state(
         ts_init,
         None,
     ))
+}
+
+/// Extracts the peg price type from order command parameters.
+///
+/// # Errors
+///
+/// Returns an error if the value is present but not a valid `BitmexPegPriceType`.
+pub fn parse_peg_price_type(params: Option<&Params>) -> anyhow::Result<Option<BitmexPegPriceType>> {
+    let value = params.and_then(|p| p.get_str("peg_price_type"));
+    match value {
+        Some(s) => BitmexPegPriceType::from_str(s)
+            .map(Some)
+            .map_err(|_| anyhow::anyhow!("Invalid peg_price_type: {s}")),
+        None => Ok(None),
+    }
+}
+
+/// Extracts the peg offset value from order command parameters.
+///
+/// # Errors
+///
+/// Returns an error if the value is present but not a valid `f64`.
+pub fn parse_peg_offset_value(params: Option<&Params>) -> anyhow::Result<Option<f64>> {
+    let value = params.and_then(|p| p.get_str("peg_offset_value"));
+    match value {
+        Some(s) => s
+            .parse::<f64>()
+            .map(Some)
+            .map_err(|_| anyhow::anyhow!("Invalid peg_offset_value: {s}")),
+        None => Ok(None),
+    }
 }
 
 #[cfg(test)]
@@ -502,6 +553,7 @@ mod tests {
             None, // margin_maint
             None, // maker_fee
             None, // taker_fee
+            None, // info
             UnixNanos::from(0),
             UnixNanos::from(0),
         );

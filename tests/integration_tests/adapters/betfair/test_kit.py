@@ -366,6 +366,22 @@ class BetfairResponses:
         return BetfairResponses.load("betting_place_order_success.json")
 
     @staticmethod
+    def betting_place_order_batch_success():
+        return BetfairResponses.load("betting_place_order_batch_success.json")
+
+    @staticmethod
+    def betting_place_order_batch_partial_failure():
+        return BetfairResponses.load("betting_place_order_batch_partial_failure.json")
+
+    @staticmethod
+    def betting_cancel_orders_batch_success():
+        return BetfairResponses.load("betting_cancel_orders_batch_success.json")
+
+    @staticmethod
+    def betting_cancel_orders_batch_partial_failure():
+        return BetfairResponses.load("betting_cancel_orders_batch_partial_failure.json")
+
+    @staticmethod
     def betting_place_orders_old():
         return BetfairResponses.load("betting_place_orders_old.json")
 
@@ -600,6 +616,8 @@ class BetfairStreaming:
         sm=0,
         sr=0,
         sc=0,
+        sl=0,
+        sv=0,
         avp=0,
         order_id: int = 248485109136,
         client_order_id: str = "",
@@ -633,9 +651,9 @@ class BetfairStreaming:
                                     md=int(pd.Timestamp.utcnow().timestamp()),
                                     sm=sm,
                                     sr=sr,
-                                    sl=0,
+                                    sl=sl,
                                     sc=sc,
-                                    sv=0,
+                                    sv=sv,
                                     rac="",
                                     rc="REG_LGA",
                                     rfo=client_order_id,

@@ -81,8 +81,9 @@ use super::{
 };
 use crate::{
     common::{
-        consts::BINANCE_VENUE,
+        consts::{BINANCE_NAUTILUS_FUTURES_BROKER_ID, BINANCE_VENUE},
         credential::resolve_credentials,
+        encoder::encode_broker_id,
         enums::{BinancePositionSide, BinanceProductType},
     },
     config::BinanceExecClientConfig,
@@ -141,9 +142,12 @@ impl BinanceFuturesExecutionClient {
             product_type,
         )?;
 
+        let clock = get_atomic_clock_realtime();
+
         let http_client = BinanceFuturesHttpClient::new(
             product_type,
             config.environment,
+            clock,
             Some(api_key.clone()),
             Some(api_secret.clone()),
             config.base_url_http.clone(),
@@ -162,8 +166,6 @@ impl BinanceFuturesExecutionClient {
             Some(20), // Heartbeat interval
         )
         .context("failed to construct Binance Futures WebSocket client")?;
-
-        let clock = get_atomic_clock_realtime();
         let emitter = ExecutionEventEmitter::new(
             clock,
             core.trader_id,
@@ -341,6 +343,7 @@ impl BinanceFuturesExecutionClient {
                 strategy_id: order.strategy_id(),
                 instrument_id: order.instrument_id(),
             };
+
             if let Err(e) = cmd_tx.send(cmd) {
                 log::error!("Failed to register order with handler: {e}");
             }
@@ -364,6 +367,7 @@ impl BinanceFuturesExecutionClient {
                 instrument_id,
                 venue_order_id,
             };
+
             if let Err(e) = cmd_tx.send(cmd) {
                 log::error!("Failed to register cancel with handler: {e}");
             }
@@ -397,6 +401,7 @@ impl BinanceFuturesExecutionClient {
         let price = order.price();
         let trigger_price = order.trigger_price();
         let reduce_only = order.is_reduce_only();
+        let post_only = order.is_post_only();
         let position_side = self.determine_position_side(order_side, reduce_only);
 
         // HTTP only generates OrderRejected on failure.
@@ -433,6 +438,7 @@ impl BinanceFuturesExecutionClient {
                         price,
                         trigger_price,
                         reduce_only,
+                        post_only,
                         position_side,
                     )
                     .await
@@ -477,7 +483,7 @@ impl BinanceFuturesExecutionClient {
         Ok(())
     }
 
-    fn cancel_order_internal(&self, cmd: &CancelOrder) -> anyhow::Result<()> {
+    fn cancel_order_internal(&self, cmd: &CancelOrder) {
         let http_client = self.http_client.clone();
         let command = cmd.clone();
 
@@ -562,8 +568,6 @@ impl BinanceFuturesExecutionClient {
 
             Ok(())
         });
-
-        Ok(())
     }
 
     fn spawn_task<F>(&self, description: &'static str, fut: F)
@@ -789,6 +793,7 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
                 .iter()
                 .map(|r| r.value().clone())
                 .collect();
+
             if let Err(e) = cmd_tx.send(ExecHandlerCommand::InitializeInstruments(
                 instruments_for_handler,
             )) {
@@ -856,6 +861,7 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
                                 let guard = listen_key_ref.read().expect(MUTEX_POISONED);
                                 guard.clone()
                             };
+
                             if let Some(ref key) = key {
                                 match http_client.keepalive_listen_key(key).await {
                                     Ok(()) => {
@@ -952,6 +958,7 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
         let command = cmd.clone();
         let emitter = self.emitter.clone();
         let account_id = self.core.account_id;
+        let clock = self.clock;
 
         let symbol = command.instrument_id.symbol.to_string();
         let order_id = command.venue_order_id.map(|id| {
@@ -959,15 +966,20 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
                 .parse::<i64>()
                 .expect("venue_order_id should be numeric")
         });
-        let orig_client_order_id = Some(command.client_order_id.to_string());
+        let orig_client_order_id = Some(encode_broker_id(
+            &command.client_order_id,
+            BINANCE_NAUTILUS_FUTURES_BROKER_ID,
+        ));
         let (_, size_precision) = self.get_instrument_precision(command.instrument_id);
 
         self.spawn_task("query_order", async move {
             let mut builder = BinanceOrderQueryParamsBuilder::default();
             builder.symbol(symbol.clone());
+
             if let Some(oid) = order_id {
                 builder.order_id(oid);
             }
+
             if let Some(coid) = orig_client_order_id {
                 builder.orig_client_order_id(coid);
             }
@@ -977,10 +989,12 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
 
             match result {
                 Ok(order) => {
+                    let ts_init = clock.get_time_ns();
                     let report = order.to_order_status_report(
                         account_id,
                         command.instrument_id,
                         size_precision,
+                        ts_init,
                     )?;
 
                     emitter.send_order_status_report(report);
@@ -1076,7 +1090,7 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
     fn submit_order_list(&self, cmd: &SubmitOrderList) -> anyhow::Result<()> {
         log::warn!(
             "submit_order_list not yet implemented for Binance Futures (got {} orders)",
-            cmd.order_list.orders.len()
+            cmd.order_list.client_order_ids.len()
         );
         Ok(())
     }
@@ -1214,7 +1228,8 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
     }
 
     fn cancel_order(&self, cmd: &CancelOrder) -> anyhow::Result<()> {
-        self.cancel_order_internal(cmd)
+        self.cancel_order_internal(cmd);
+        Ok(())
     }
 
     fn cancel_all_orders(&self, cmd: &CancelAllOrders) -> anyhow::Result<()> {
@@ -1277,13 +1292,19 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
                             } else {
                                 BatchCancelItem::by_client_order_id(
                                     command.instrument_id.symbol.to_string(),
-                                    cancel.client_order_id.to_string(),
+                                    encode_broker_id(
+                                        &cancel.client_order_id,
+                                        BINANCE_NAUTILUS_FUTURES_BROKER_ID,
+                                    ),
                                 )
                             }
                         } else {
                             BatchCancelItem::by_client_order_id(
                                 command.instrument_id.symbol.to_string(),
-                                cancel.client_order_id.to_string(),
+                                encode_broker_id(
+                                    &cancel.client_order_id,
+                                    BINANCE_NAUTILUS_FUTURES_BROKER_ID,
+                                ),
                             )
                         }
                     })
@@ -1382,19 +1403,24 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
                 .parse::<i64>()
                 .expect("venue_order_id should be numeric")
         });
-        let orig_client_order_id = cmd.client_order_id.map(|id| id.to_string());
+        let orig_client_order_id = cmd
+            .client_order_id
+            .map(|id| encode_broker_id(&id, BINANCE_NAUTILUS_FUTURES_BROKER_ID));
 
         let mut builder = BinanceOrderQueryParamsBuilder::default();
         builder.symbol(symbol);
+
         if let Some(oid) = order_id {
             builder.order_id(oid);
         }
+
         if let Some(ref coid) = orig_client_order_id {
             builder.orig_client_order_id(coid.clone());
         }
         let params = builder.build().map_err(|e| anyhow::anyhow!("{e}"))?;
 
         let (_, size_precision) = self.get_instrument_precision(instrument_id);
+        let ts_init = self.clock.get_time_ns();
 
         match self.http_client.query_order(&params).await {
             Ok(order) => {
@@ -1402,6 +1428,7 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
                     self.core.account_id,
                     instrument_id,
                     size_precision,
+                    ts_init,
                 )?;
                 Ok(Some(report))
             }
@@ -1417,6 +1444,7 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
                             self.core.account_id,
                             instrument_id,
                             size_precision,
+                            ts_init,
                         )?;
                         Ok(Some(report))
                     }
@@ -1434,11 +1462,13 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
         &self,
         cmd: &GenerateOrderStatusReports,
     ) -> anyhow::Result<Vec<OrderStatusReport>> {
+        let ts_init = self.clock.get_time_ns();
         let mut reports = Vec::new();
 
         if cmd.open_only {
             let symbol = cmd.instrument_id.map(|id| id.symbol.to_string());
             let mut builder = BinanceOpenOrdersParamsBuilder::default();
+
             if let Some(s) = symbol {
                 builder.symbol(s);
             }
@@ -1452,10 +1482,12 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
             for order in orders {
                 if let Some(instrument_id) = cmd.instrument_id {
                     let (_, size_precision) = self.get_instrument_precision(instrument_id);
+
                     if let Ok(report) = order.to_order_status_report(
                         self.core.account_id,
                         instrument_id,
                         size_precision,
+                        ts_init,
                     ) {
                         reports.push(report);
                     }
@@ -1469,6 +1501,7 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
                             self.core.account_id,
                             instrument.id(),
                             instrument.size_precision(),
+                            ts_init,
                         )
                     {
                         reports.push(report);
@@ -1479,10 +1512,12 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
             for algo_order in algo_orders {
                 if let Some(instrument_id) = cmd.instrument_id {
                     let (_, size_precision) = self.get_instrument_precision(instrument_id);
+
                     if let Ok(report) = algo_order.to_order_status_report(
                         self.core.account_id,
                         instrument_id,
                         size_precision,
+                        ts_init,
                     ) {
                         reports.push(report);
                     }
@@ -1496,6 +1531,7 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
                             self.core.account_id,
                             instrument.id(),
                             instrument.size_precision(),
+                            ts_init,
                         )
                     {
                         reports.push(report);
@@ -1509,9 +1545,11 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
 
             let mut builder = BinanceAllOrdersParamsBuilder::default();
             builder.symbol(symbol);
+
             if let Some(st) = start_time {
                 builder.start_time(st);
             }
+
             if let Some(et) = end_time {
                 builder.end_time(et);
             }
@@ -1525,6 +1563,7 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
                     self.core.account_id,
                     instrument_id,
                     size_precision,
+                    ts_init,
                 ) {
                     reports.push(report);
                 }
@@ -1549,9 +1588,11 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
 
         let mut builder = BinanceUserTradesParamsBuilder::default();
         builder.symbol(symbol);
+
         if let Some(st) = start_time {
             builder.start_time(st);
         }
+
         if let Some(et) = end_time {
             builder.end_time(et);
         }
@@ -1559,6 +1600,7 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
 
         let trades = self.http_client.query_user_trades(&params).await?;
         let (price_precision, size_precision) = self.get_instrument_precision(instrument_id);
+        let ts_init = self.clock.get_time_ns();
 
         let mut reports = Vec::new();
         for trade in trades {
@@ -1567,6 +1609,7 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
                 instrument_id,
                 price_precision,
                 size_precision,
+                ts_init,
             ) {
                 reports.push(report);
             }
@@ -1582,6 +1625,7 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
         let symbol = cmd.instrument_id.map(|id| id.symbol.to_string());
 
         let mut builder = BinancePositionRiskParamsBuilder::default();
+
         if let Some(s) = symbol {
             builder.symbol(s);
         }

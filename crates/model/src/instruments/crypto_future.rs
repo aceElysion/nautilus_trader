@@ -16,7 +16,7 @@
 use std::hash::{Hash, Hasher};
 
 use nautilus_core::{
-    UnixNanos,
+    Params, UnixNanos,
     correctness::{FAILED, check_equal_u8},
 };
 use rust_decimal::Decimal;
@@ -37,10 +37,10 @@ use crate::{
 
 /// Represents a deliverable futures contract instrument, with crypto assets as underlying and for settlement.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
 )]
 pub struct CryptoFuture {
     /// The instrument ID for the instrument.
@@ -94,6 +94,8 @@ pub struct CryptoFuture {
     pub max_price: Option<Price>,
     /// The minimum allowable quoted price.
     pub min_price: Option<Price>,
+    /// Additional instrument metadata as a JSON-serializable dictionary.
+    pub info: Option<Params>,
     /// UNIX timestamp (nanoseconds) when the data event occurred.
     pub ts_event: UnixNanos,
     /// UNIX timestamp (nanoseconds) when the data object was initialized.
@@ -135,6 +137,7 @@ impl CryptoFuture {
         margin_maint: Option<Decimal>,
         maker_fee: Option<Decimal>,
         taker_fee: Option<Decimal>,
+        info: Option<Params>,
         ts_event: UnixNanos,
         ts_init: UnixNanos,
     ) -> anyhow::Result<Self> {
@@ -179,6 +182,7 @@ impl CryptoFuture {
             min_notional,
             max_price,
             min_price,
+            info,
             ts_event,
             ts_init,
         })
@@ -215,6 +219,7 @@ impl CryptoFuture {
         margin_maint: Option<Decimal>,
         maker_fee: Option<Decimal>,
         taker_fee: Option<Decimal>,
+        info: Option<Params>,
         ts_event: UnixNanos,
         ts_init: UnixNanos,
     ) -> Self {
@@ -243,6 +248,7 @@ impl CryptoFuture {
             margin_maint,
             maker_fee,
             taker_fee,
+            info,
             ts_event,
             ts_init,
         )
@@ -365,6 +371,22 @@ impl Instrument for CryptoFuture {
         self.ts_init
     }
 
+    fn margin_init(&self) -> Decimal {
+        self.margin_init
+    }
+
+    fn margin_maint(&self) -> Decimal {
+        self.margin_maint
+    }
+
+    fn maker_fee(&self) -> Decimal {
+        self.maker_fee
+    }
+
+    fn taker_fee(&self) -> Decimal {
+        self.taker_fee
+    }
+
     fn strike_price(&self) -> Option<Price> {
         None
     }
@@ -394,7 +416,7 @@ mod tests {
 
     #[rstest]
     fn test_equality(crypto_future_btcusdt: CryptoFuture) {
-        let cloned = crypto_future_btcusdt;
+        let cloned = crypto_future_btcusdt.clone();
         assert_eq!(crypto_future_btcusdt, cloned);
     }
 }

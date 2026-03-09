@@ -17,9 +17,11 @@
 
 pub mod bar;
 pub mod close;
+pub mod custom;
 pub mod delta;
 pub mod depth;
 pub mod index_price;
+pub mod instrument;
 pub mod mark_price;
 pub mod quote;
 pub mod trade;
@@ -30,7 +32,7 @@ use std::{
 };
 
 use arrow::{
-    array::{Array, ArrayRef, FixedSizeBinaryArray},
+    array::{Array, ArrayRef, FixedSizeBinaryArray, StringArray, StringViewArray},
     datatypes::{DataType, Schema},
     error::ArrowError,
     ipc::writer::StreamWriter,
@@ -54,8 +56,8 @@ use pyo3::prelude::*;
 // Define metadata key constants constants
 const KEY_BAR_TYPE: &str = "bar_type";
 pub const KEY_INSTRUMENT_ID: &str = "instrument_id";
-const KEY_PRICE_PRECISION: &str = "price_precision";
-const KEY_SIZE_PRECISION: &str = "size_precision";
+pub const KEY_PRICE_PRECISION: &str = "price_precision";
+pub const KEY_SIZE_PRECISION: &str = "size_precision";
 
 #[derive(thiserror::Error, Debug)]
 pub enum DataStreamingError {
@@ -155,7 +157,11 @@ fn get_corrected_raw_quantity(bytes: &[u8], precision: u8) -> QuantityRaw {
 ///
 /// Uses corrected raw values to handle floating-point precision errors in stored data.
 /// Sentinel values (`PRICE_UNDEF`, `PRICE_ERROR`) are preserved unchanged.
-fn decode_price(
+///
+/// # Errors
+///
+/// Returns an [`EncodingError::ParseError`] if the price value is out of bounds.
+pub fn decode_price(
     bytes: &[u8],
     precision: u8,
     field: &'static str,
@@ -170,7 +176,11 @@ fn decode_price(
 ///
 /// Uses corrected raw values to handle floating-point precision errors in stored data.
 /// Sentinel values (`QUANTITY_UNDEF`) are preserved unchanged.
-fn decode_quantity(
+///
+/// # Errors
+///
+/// Returns an [`EncodingError::ParseError`] if the quantity value is out of bounds.
+pub fn decode_quantity(
     bytes: &[u8],
     precision: u8,
     field: &'static str,
@@ -184,7 +194,11 @@ fn decode_quantity(
 /// Decodes a [`Price`] from raw bytes, using precision 0 for sentinel values.
 ///
 /// For order book data where sentinel values indicate empty levels.
-fn decode_price_with_sentinel(
+///
+/// # Errors
+///
+/// Returns an [`EncodingError::ParseError`] if the price value is out of bounds.
+pub fn decode_price_with_sentinel(
     bytes: &[u8],
     precision: u8,
     field: &'static str,
@@ -203,7 +217,11 @@ fn decode_price_with_sentinel(
 /// Decodes a [`Quantity`] from raw bytes, using precision 0 for sentinel values.
 ///
 /// For order book data where sentinel values indicate empty levels.
-fn decode_quantity_with_sentinel(
+///
+/// # Errors
+///
+/// Returns an [`EncodingError::ParseError`] if the quantity value is out of bounds.
+pub fn decode_quantity_with_sentinel(
     bytes: &[u8],
     precision: u8,
     field: &'static str,
@@ -288,7 +306,7 @@ where
 /// Decodes raw Data objects from Apache Arrow RecordBatch format.
 pub trait DecodeDataFromRecordBatch
 where
-    Self: Sized + Into<Data> + ArrowSchemaProvider,
+    Self: Sized + ArrowSchemaProvider,
 {
     /// Decodes a `RecordBatch` into raw `Data` values, using the provided metadata.
     ///
@@ -317,6 +335,55 @@ impl<T: Write> WriteStream for T {
         writer.write(record_batch)?;
         writer.finish()?;
         Ok(())
+    }
+}
+
+/// Extracts a string column, accepting both Utf8 (`StringArray`) and Utf8View (`StringViewArray`).
+/// Parquet may return Utf8View when reading, so this handles both formats.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - `column_index` is out of range: `EncodingError::MissingColumn`.
+/// - The column type is neither Utf8 nor Utf8View: `EncodingError::InvalidColumnType`.
+pub fn extract_column_string<'a>(
+    cols: &'a [ArrayRef],
+    column_key: &'static str,
+    column_index: usize,
+) -> Result<StringColumnRef<'a>, EncodingError> {
+    let column_values = cols
+        .get(column_index)
+        .ok_or(EncodingError::MissingColumn(column_key, column_index))?;
+    let dt = column_values.data_type();
+    if let Some(arr) = column_values.as_any().downcast_ref::<StringArray>() {
+        Ok(StringColumnRef::Utf8(arr))
+    } else if let Some(arr) = column_values.as_any().downcast_ref::<StringViewArray>() {
+        Ok(StringColumnRef::Utf8View(arr))
+    } else {
+        Err(EncodingError::InvalidColumnType(
+            column_key,
+            column_index,
+            DataType::Utf8,
+            dt.clone(),
+        ))
+    }
+}
+
+/// Reference to a string column, either Utf8 or Utf8View.
+#[derive(Debug)]
+pub enum StringColumnRef<'a> {
+    Utf8(&'a StringArray),
+    Utf8View(&'a StringViewArray),
+}
+
+impl StringColumnRef<'_> {
+    /// Returns the string value at row `i`.
+    #[inline]
+    pub fn value(&self, i: usize) -> &str {
+        match self {
+            Self::Utf8(arr) => arr.value(i),
+            Self::Utf8View(arr) => arr.value(i),
+        }
     }
 }
 
@@ -399,10 +466,7 @@ pub fn book_deltas_to_arrow_record_batch_bytes(
 /// Returns an error if:
 /// - `data` is empty: `EncodingError::EmptyData`.
 /// - Encoding fails: `EncodingError::ArrowError`.
-///
-/// # Panics
-///
-/// Panics if `data` is empty (after the explicit empty check, unwrap is safe).
+#[allow(clippy::missing_panics_doc)] // Guarded by empty check
 pub fn book_depth10_to_arrow_record_batch_bytes(
     data: Vec<OrderBookDepth10>,
 ) -> Result<RecordBatch, EncodingError> {
@@ -411,7 +475,6 @@ pub fn book_depth10_to_arrow_record_batch_bytes(
     }
 
     // Take first element and extract metadata
-    // SAFETY: Unwrap safe as already checked that `data` not empty
     let first = data.first().unwrap();
     let metadata = first.metadata();
     OrderBookDepth10::encode_batch(&metadata, &data).map_err(EncodingError::ArrowError)
@@ -424,10 +487,7 @@ pub fn book_depth10_to_arrow_record_batch_bytes(
 /// Returns an error if:
 /// - `data` is empty: `EncodingError::EmptyData`.
 /// - Encoding fails: `EncodingError::ArrowError`.
-///
-/// # Panics
-///
-/// Panics if `data` is empty (after the explicit empty check, unwrap is safe).
+#[allow(clippy::missing_panics_doc)] // Guarded by empty check
 pub fn quotes_to_arrow_record_batch_bytes(
     data: Vec<QuoteTick>,
 ) -> Result<RecordBatch, EncodingError> {
@@ -436,7 +496,6 @@ pub fn quotes_to_arrow_record_batch_bytes(
     }
 
     // Take first element and extract metadata
-    // SAFETY: Unwrap safe as already checked that `data` not empty
     let first = data.first().unwrap();
     let metadata = first.metadata();
     QuoteTick::encode_batch(&metadata, &data).map_err(EncodingError::ArrowError)
@@ -449,10 +508,7 @@ pub fn quotes_to_arrow_record_batch_bytes(
 /// Returns an error if:
 /// - `data` is empty: `EncodingError::EmptyData`.
 /// - Encoding fails: `EncodingError::ArrowError`.
-///
-/// # Panics
-///
-/// Panics if `data` is empty (after the explicit empty check, unwrap is safe).
+#[allow(clippy::missing_panics_doc)] // Guarded by empty check
 pub fn trades_to_arrow_record_batch_bytes(
     data: Vec<TradeTick>,
 ) -> Result<RecordBatch, EncodingError> {
@@ -461,7 +517,6 @@ pub fn trades_to_arrow_record_batch_bytes(
     }
 
     // Take first element and extract metadata
-    // SAFETY: Unwrap safe as already checked that `data` not empty
     let first = data.first().unwrap();
     let metadata = first.metadata();
     TradeTick::encode_batch(&metadata, &data).map_err(EncodingError::ArrowError)
@@ -474,17 +529,13 @@ pub fn trades_to_arrow_record_batch_bytes(
 /// Returns an error if:
 /// - `data` is empty: `EncodingError::EmptyData`.
 /// - Encoding fails: `EncodingError::ArrowError`.
-///
-/// # Panics
-///
-/// Panics if `data` is empty (after the explicit empty check, unwrap is safe).
+#[allow(clippy::missing_panics_doc)] // Guarded by empty check
 pub fn bars_to_arrow_record_batch_bytes(data: Vec<Bar>) -> Result<RecordBatch, EncodingError> {
     if data.is_empty() {
         return Err(EncodingError::EmptyData);
     }
 
     // Take first element and extract metadata
-    // SAFETY: Unwrap safe as already checked that `data` not empty
     let first = data.first().unwrap();
     let metadata = first.metadata();
     Bar::encode_batch(&metadata, &data).map_err(EncodingError::ArrowError)
@@ -497,10 +548,7 @@ pub fn bars_to_arrow_record_batch_bytes(data: Vec<Bar>) -> Result<RecordBatch, E
 /// Returns an error if:
 /// - `data` is empty: `EncodingError::EmptyData`.
 /// - Encoding fails: `EncodingError::ArrowError`.
-///
-/// # Panics
-///
-/// Panics if `data` is empty (after the explicit empty check, unwrap is safe).
+#[allow(clippy::missing_panics_doc)] // Guarded by empty check
 pub fn mark_prices_to_arrow_record_batch_bytes(
     data: Vec<MarkPriceUpdate>,
 ) -> Result<RecordBatch, EncodingError> {
@@ -509,7 +557,6 @@ pub fn mark_prices_to_arrow_record_batch_bytes(
     }
 
     // Take first element and extract metadata
-    // SAFETY: Unwrap safe as already checked that `data` not empty
     let first = data.first().unwrap();
     let metadata = first.metadata();
     MarkPriceUpdate::encode_batch(&metadata, &data).map_err(EncodingError::ArrowError)
@@ -522,10 +569,7 @@ pub fn mark_prices_to_arrow_record_batch_bytes(
 /// Returns an error if:
 /// - `data` is empty: `EncodingError::EmptyData`.
 /// - Encoding fails: `EncodingError::ArrowError`.
-///
-/// # Panics
-///
-/// Panics if `data` is empty (after the explicit empty check, unwrap is safe).
+#[allow(clippy::missing_panics_doc)] // Guarded by empty check
 pub fn index_prices_to_arrow_record_batch_bytes(
     data: Vec<IndexPriceUpdate>,
 ) -> Result<RecordBatch, EncodingError> {
@@ -534,7 +578,6 @@ pub fn index_prices_to_arrow_record_batch_bytes(
     }
 
     // Take first element and extract metadata
-    // SAFETY: Unwrap safe as already checked that `data` not empty
     let first = data.first().unwrap();
     let metadata = first.metadata();
     IndexPriceUpdate::encode_batch(&metadata, &data).map_err(EncodingError::ArrowError)
@@ -547,10 +590,7 @@ pub fn index_prices_to_arrow_record_batch_bytes(
 /// Returns an error if:
 /// - `data` is empty: `EncodingError::EmptyData`.
 /// - Encoding fails: `EncodingError::ArrowError`.
-///
-/// # Panics
-///
-/// Panics if `data` is empty (after the explicit empty check, unwrap is safe).
+#[allow(clippy::missing_panics_doc)] // Guarded by empty check
 pub fn instrument_closes_to_arrow_record_batch_bytes(
     data: Vec<InstrumentClose>,
 ) -> Result<RecordBatch, EncodingError> {
@@ -559,7 +599,6 @@ pub fn instrument_closes_to_arrow_record_batch_bytes(
     }
 
     // Take first element and extract metadata
-    // SAFETY: Unwrap safe as already checked that `data` not empty
     let first = data.first().unwrap();
     let metadata = first.metadata();
     InstrumentClose::encode_batch(&metadata, &data).map_err(EncodingError::ArrowError)

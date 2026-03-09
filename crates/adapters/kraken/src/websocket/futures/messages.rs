@@ -16,8 +16,10 @@
 //! Data models for Kraken Futures WebSocket v1 API messages.
 
 use nautilus_model::{
-    data::{IndexPriceUpdate, MarkPriceUpdate, OrderBookDeltas, QuoteTick, TradeTick},
-    events::{OrderAccepted, OrderCanceled, OrderExpired, OrderUpdated},
+    data::{
+        FundingRateUpdate, IndexPriceUpdate, MarkPriceUpdate, OrderBookDeltas, QuoteTick, TradeTick,
+    },
+    events::{OrderAccepted, OrderCanceled, OrderExpired, OrderRejected, OrderUpdated},
     reports::{FillReport, OrderStatusReport},
 };
 use serde::{Deserialize, Serialize};
@@ -35,7 +37,9 @@ pub enum KrakenFuturesWsMessage {
     Trade(TradeTick),
     MarkPrice(MarkPriceUpdate),
     IndexPrice(IndexPriceUpdate),
+    FundingRate(FundingRateUpdate),
     OrderAccepted(OrderAccepted),
+    OrderRejected(OrderRejected),
     OrderCanceled(OrderCanceled),
     OrderExpired(OrderExpired),
     OrderUpdated(OrderUpdated),
@@ -70,6 +74,7 @@ pub enum KrakenFuturesChannel {
     Quotes,
     Mark,
     Index,
+    Funding,
 }
 
 /// Kraken Futures WebSocket event types.

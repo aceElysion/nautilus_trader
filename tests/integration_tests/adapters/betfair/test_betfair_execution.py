@@ -25,6 +25,7 @@ from unittest.mock import patch
 
 import msgspec
 import pytest
+from betfair_parser.exceptions import APINGException
 from betfair_parser.exceptions import BetfairError
 from betfair_parser.spec.betting.enums import ExecutionReportErrorCode
 from betfair_parser.spec.betting.enums import ExecutionReportStatus
@@ -41,26 +42,36 @@ from betfair_parser.spec.streaming import stream_decode
 from nautilus_trader.adapters.betfair.client import BetfairHttpClient
 from nautilus_trader.adapters.betfair.common import OrderSideParser
 from nautilus_trader.adapters.betfair.config import BetfairExecClientConfig
+from nautilus_trader.adapters.betfair.constants import BETFAIR_FILL_CACHE_TTL_NS
 from nautilus_trader.adapters.betfair.constants import BETFAIR_PRICE_PRECISION
 from nautilus_trader.adapters.betfair.constants import BETFAIR_QUANTITY_PRECISION
 from nautilus_trader.adapters.betfair.data import BetfairDataClient
+from nautilus_trader.adapters.betfair.data_types import BetfairOrderVoided
 from nautilus_trader.adapters.betfair.execution import BetfairExecutionClient
 from nautilus_trader.adapters.betfair.orderbook import betfair_float_to_price
 from nautilus_trader.adapters.betfair.orderbook import betfair_float_to_quantity
 from nautilus_trader.adapters.betfair.parsing import requests as parsing_requests
 from nautilus_trader.adapters.betfair.parsing.common import betfair_instrument_id
+from nautilus_trader.adapters.betfair.parsing.requests import make_customer_order_ref
 from nautilus_trader.core.rust.model import OrderSide
 from nautilus_trader.core.rust.model import OrderStatus
 from nautilus_trader.core.rust.model import TimeInForce
+from nautilus_trader.core.rust.model import TriggerType
 from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.execution.messages import BatchCancelOrders
+from nautilus_trader.execution.messages import CancelOrder
 from nautilus_trader.execution.messages import GenerateFillReports
 from nautilus_trader.execution.messages import GenerateOrderStatusReport
 from nautilus_trader.execution.messages import GenerateOrderStatusReports
+from nautilus_trader.execution.messages import SubmitOrderList
 from nautilus_trader.execution.reports import OrderStatusReport
 from nautilus_trader.model.currencies import GBP
+from nautilus_trader.model.data import CustomData
 from nautilus_trader.model.enums import LiquiditySide
 from nautilus_trader.model.events.order import OrderAccepted
 from nautilus_trader.model.events.order import OrderCanceled
+from nautilus_trader.model.events.order import OrderCancelRejected
+from nautilus_trader.model.events.order import OrderDenied
 from nautilus_trader.model.events.order import OrderFilled
 from nautilus_trader.model.events.order import OrderInitialized
 from nautilus_trader.model.events.order import OrderPendingUpdate
@@ -70,6 +81,7 @@ from nautilus_trader.model.events.order import OrderUpdated
 from nautilus_trader.model.events.position import PositionOpened
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.identifiers import OrderListId
 from nautilus_trader.model.identifiers import StrategyId
 from nautilus_trader.model.identifiers import TradeId
 from nautilus_trader.model.identifiers import VenueOrderId
@@ -79,6 +91,9 @@ from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
+from nautilus_trader.model.orders import LimitOrder
+from nautilus_trader.model.orders import OrderList
+from nautilus_trader.model.orders import StopMarketOrder
 from nautilus_trader.test_kit.functions import eventually
 from nautilus_trader.test_kit.stubs.commands import TestCommandStubs
 from nautilus_trader.test_kit.stubs.events import TestEventStubs
@@ -131,6 +146,9 @@ async def _setup_order_state(
                             client_order_id=client_order_id,
                         )
                         await _accept_order(order, venue_order_id, exec_client, strategy, cache)
+
+                        # Add venue_order_id mapping for stream resolution when rfo is empty
+                        cache.add_venue_order_id(client_order_id, venue_order_id)
 
                         if include_fills and order_update.sm:
                             await _fill_order(
@@ -731,9 +749,9 @@ async def test_duplicate_trade_id(exec_client, setup_order_state, fill_events, c
     assert isinstance(cancel, OrderCanceled)
     # Second order example, partial fill followed by remainder filled
     assert isinstance(fill2, OrderFilled)
-    assert fill2.trade_id.value == "dbd3743a0ce238c62acc5d400314659e7d74"
+    assert fill2.trade_id.value == "f28dd583d04ad052ead605465599c87863a3"
     assert isinstance(fill3, OrderFilled)
-    assert fill3.trade_id.value == "353ebd92c374d78b17d5f4a4b4897e9e5ea8"
+    assert fill3.trade_id.value == "fb9d0402fe285ad1bb0c619ffde778d673dc"
 
 
 @pytest.mark.asyncio
@@ -757,6 +775,83 @@ async def test_duplicate_cancel_events_prevented(exec_client, setup_order_state,
     await asyncio.sleep(0)
 
     # Assert - Only one cancel event should be generated
+    assert len(cancel_events) == 1
+    assert isinstance(cancel_events[0], OrderCanceled)
+
+
+@pytest.mark.asyncio
+async def test_http_cancel_then_stream_cancel_no_duplicate(
+    betfair_client: BetfairHttpClient,
+    exec_client: BetfairExecutionClient,
+    accept_order,
+    test_order,
+    venue_order_id,
+    cancel_events,
+):
+    """
+    Test that duplicate cancel events are prevented when HTTP cancel succeeds followed
+    by a stream update with the same cancel status.
+
+    This prevents InvalidStateTrigger: CANCELED -> CANCELED errors from the race
+    condition between HTTP response and stream update.
+
+    """
+    # Arrange
+    order = await accept_order(order=test_order, venue_order_id=venue_order_id)
+    mock_betfair_request(betfair_client, BetfairResponses.betting_cancel_orders_success())
+
+    # Act - HTTP cancel succeeds first
+    command = TestCommandStubs.cancel_order_command(order=order)
+    exec_client.cancel_order(command)
+    await asyncio.sleep(0)
+
+    # Assert
+    assert len(cancel_events) == 1
+
+    # Act - Stream cancel arrives after (simulating race condition)
+    order_change_message = BetfairStreaming.ocm_CANCEL()
+    exec_client.handle_order_stream_update(order_change_message)
+    await asyncio.sleep(0)
+
+    # Assert - Still only one cancel event
+    assert len(cancel_events) == 1
+    assert isinstance(cancel_events[0], OrderCanceled)
+
+
+@pytest.mark.asyncio
+async def test_stream_cancel_then_http_cancel_no_duplicate(
+    betfair_client: BetfairHttpClient,
+    exec_client: BetfairExecutionClient,
+    setup_order_state,
+    cancel_events,
+):
+    """
+    Test that duplicate cancel events are prevented when stream cancel arrives first,
+    followed by HTTP cancel response.
+
+    This covers the reverse race condition where the stream processes the cancel before
+    the HTTP response arrives.
+
+    """
+    # Arrange
+    order_change_message = BetfairStreaming.ocm_CANCEL()
+    await setup_order_state(order_change_message=order_change_message)
+
+    # Act - Stream cancel arrives first
+    exec_client.handle_order_stream_update(order_change_message)
+    await asyncio.sleep(0)
+
+    # Assert
+    assert len(cancel_events) == 1
+
+    # Act - HTTP cancel returns after (simulating race condition)
+    mock_betfair_request(betfair_client, BetfairResponses.betting_cancel_orders_success())
+    order = exec_client._cache.orders()[0]
+    command = TestCommandStubs.cancel_order_command(order=order)
+    exec_client.cancel_order(command)
+    await asyncio.sleep(0)
+
+    # Assert - Still only one cancel event
     assert len(cancel_events) == 1
     assert isinstance(cancel_events[0], OrderCanceled)
 
@@ -1597,6 +1692,144 @@ def test_cleanup_terminal_order_removes_both_truncations(
     assert legacy_ref not in exec_client._customer_order_refs
 
 
+@pytest.mark.asyncio
+async def test_voided_order_publishes_custom_data(
+    exec_client: BetfairExecutionClient,
+    setup_order_state,
+    cache,
+    instrument,
+    mock_data_engine_process,
+):
+    """
+    Test that when an order has size_voided (sv) > 0, a BetfairOrderVoided custom data
+    event is published to the message bus.
+    """
+    # Arrange
+    order_change_message = BetfairStreaming.generate_order_change_message(
+        price=1.50,
+        size=100,
+        side="B",
+        status="EC",
+        sm=50,
+        sr=0,
+        sc=0,
+        sl=0,
+        sv=50,  # Voided due to VAR decision
+        avp=1.50,
+        market_id="1-179082386",
+        selection_id=50214,
+    )
+    await setup_order_state(order_change_message=order_change_message)
+
+    # Act
+    exec_client.handle_order_stream_update(msgspec.json.encode(order_change_message))
+    await asyncio.sleep(0)
+
+    # Assert
+    mock_calls = mock_data_engine_process.call_args_list
+    voided_events = [
+        call.args[0]
+        for call in mock_calls
+        if isinstance(call.args[0], CustomData)
+        and isinstance(call.args[0].data, BetfairOrderVoided)
+    ]
+    assert len(voided_events) == 1
+    voided: BetfairOrderVoided = voided_events[0].data
+    assert voided.size_voided == 50.0
+    assert voided.price == 1.50
+    assert voided.size == 100.0
+    assert voided.side == "B"
+    assert voided.avg_price_matched == 1.50
+    assert voided.size_matched == 50.0
+    assert voided.instrument_id.value == "1-179082386-50214-None.BETFAIR"
+
+
+@pytest.mark.asyncio
+async def test_voided_order_with_partial_void(
+    exec_client: BetfairExecutionClient,
+    setup_order_state,
+    mock_data_engine_process,
+):
+    """
+    Test partial void scenario: order had 100 matched, 25 voided (e.g., VAR review
+    determined 25 was matched after goal that was disallowed).
+    """
+    # Arrange
+    order_change_message = BetfairStreaming.generate_order_change_message(
+        price=2.0,
+        size=100,
+        side="L",
+        status="EC",
+        sm=75,
+        sr=0,
+        sc=0,
+        sl=0,
+        sv=25,
+        avp=2.0,
+        market_id="1-179082386",
+        selection_id=50214,
+    )
+    await setup_order_state(order_change_message=order_change_message)
+
+    # Act
+    exec_client.handle_order_stream_update(msgspec.json.encode(order_change_message))
+    await asyncio.sleep(0)
+
+    # Assert
+    mock_calls = mock_data_engine_process.call_args_list
+    voided_events = [
+        call.args[0]
+        for call in mock_calls
+        if isinstance(call.args[0], CustomData)
+        and isinstance(call.args[0].data, BetfairOrderVoided)
+    ]
+    assert len(voided_events) == 1
+    assert voided_events[0].data.size_voided == 25.0
+    assert voided_events[0].data.price == 2.0
+    assert voided_events[0].data.side == "L"
+
+
+@pytest.mark.asyncio
+async def test_no_void_event_when_sv_is_zero(
+    exec_client: BetfairExecutionClient,
+    setup_order_state,
+    mock_data_engine_process,
+):
+    """
+    Test that no BetfairOrderVoided event is published when sv=0.
+    """
+    # Arrange
+    order_change_message = BetfairStreaming.generate_order_change_message(
+        price=1.50,
+        size=100,
+        side="B",
+        status="EC",
+        sm=50,
+        sr=0,
+        sc=50,
+        sl=0,
+        sv=0,
+        avp=1.50,
+        market_id="1-179082386",
+        selection_id=50214,
+    )
+    await setup_order_state(order_change_message=order_change_message)
+
+    # Act
+    exec_client.handle_order_stream_update(msgspec.json.encode(order_change_message))
+    await asyncio.sleep(0)
+
+    # Assert
+    mock_calls = mock_data_engine_process.call_args_list
+    voided_events = [
+        call.args[0]
+        for call in mock_calls
+        if isinstance(call.args[0], CustomData)
+        and isinstance(call.args[0].data, BetfairOrderVoided)
+    ]
+    assert len(voided_events) == 0
+
+
 def test_get_matched_timestamp_fallback(exec_client):
     """
     Test that _get_matched_timestamp falls back to clock when md is None.
@@ -1813,7 +2046,7 @@ async def test_sync_fill_caches_from_orders_populates_caches(
         5.0,
         BETFAIR_QUANTITY_PRECISION,
     )
-    assert TradeId("TRADE-001") in exec_client._published_executions[order.client_order_id]
+    assert "TRADE-001" in exec_client._published_executions
 
 
 @pytest.mark.asyncio
@@ -2130,7 +2363,7 @@ async def test_determine_fill_qty_cache_ahead_of_order(
 
 
 @pytest.mark.asyncio
-async def test_update_fill_cache_clears_on_completion(
+async def test_update_fill_cache_retains_on_completion(
     exec_client: BetfairExecutionClient,
     cache,
     accept_order,
@@ -2154,9 +2387,171 @@ async def test_update_fill_cache_clears_on_completion(
     # Act
     exec_client._update_fill_cache(total_matched_qty, avg_px, order)
 
-    # Assert
+    # Assert - cache retained until HTTP API confirms catch-up
+    assert exec_client._cache_filled_qty[order.client_order_id] == total_matched_qty
+    assert exec_client._cache_avg_px[order.client_order_id] == avg_px
+    assert order.client_order_id in exec_client._cache_filled_completed_ns
+
+
+@pytest.mark.asyncio
+async def test_confirm_fill_cache_cleanup_clears_when_api_caught_up(
+    exec_client: BetfairExecutionClient,
+    cache,
+    accept_order,
+):
+    instrument = betting_instrument()
+    cache.add_instrument(instrument)
+
+    order = TestExecStubs.limit_order(
+        instrument=instrument,
+        quantity=Quantity(10.0, BETFAIR_QUANTITY_PRECISION),
+    )
+    venue_order_id = VenueOrderId("12345")
+    await accept_order(order, venue_order_id)
+
+    exec_client._cache_filled_qty[order.client_order_id] = Quantity(
+        10.0,
+        BETFAIR_QUANTITY_PRECISION,
+    )
+    exec_client._cache_avg_px[order.client_order_id] = 2.5
+
+    # Act - API still stale, reports less than cached
+    exec_client._confirm_fill_cache_cleanup(order.client_order_id, 2.17)
+
+    # Assert - cache retained because API hasn't caught up
+    assert order.client_order_id in exec_client._cache_filled_qty
+    assert order.client_order_id in exec_client._cache_avg_px
+
+    # Act - API catches up
+    exec_client._confirm_fill_cache_cleanup(order.client_order_id, 10.0)
+
+    # Assert - cache cleared
     assert order.client_order_id not in exec_client._cache_filled_qty
     assert order.client_order_id not in exec_client._cache_avg_px
+
+
+@pytest.mark.asyncio
+async def test_sweep_expired_fill_cache_evicts_after_ttl(
+    exec_client: BetfairExecutionClient,
+    cache,
+    accept_order,
+):
+    instrument = betting_instrument()
+    cache.add_instrument(instrument)
+
+    order = TestExecStubs.limit_order(
+        instrument=instrument,
+        quantity=Quantity(10.0, BETFAIR_QUANTITY_PRECISION),
+    )
+    venue_order_id = VenueOrderId("12345")
+    await accept_order(order, venue_order_id)
+
+    exec_client._cache_filled_qty[order.client_order_id] = Quantity(
+        10.0,
+        BETFAIR_QUANTITY_PRECISION,
+    )
+    exec_client._cache_avg_px[order.client_order_id] = 2.5
+
+    # Simulate completion timestamp older than TTL
+    ts_now = exec_client._clock.timestamp_ns()
+    exec_client._cache_filled_completed_ns[order.client_order_id] = (
+        ts_now - BETFAIR_FILL_CACHE_TTL_NS - 1
+    )
+
+    # Act
+    exec_client._sweep_expired_fill_cache()
+
+    # Assert - expired entry evicted
+    assert order.client_order_id not in exec_client._cache_filled_qty
+    assert order.client_order_id not in exec_client._cache_filled_completed_ns
+    assert order.client_order_id not in exec_client._cache_avg_px
+
+
+@pytest.mark.asyncio
+async def test_sweep_expired_fill_cache_retains_within_ttl(
+    exec_client: BetfairExecutionClient,
+    cache,
+    accept_order,
+):
+    instrument = betting_instrument()
+    cache.add_instrument(instrument)
+
+    order = TestExecStubs.limit_order(
+        instrument=instrument,
+        quantity=Quantity(10.0, BETFAIR_QUANTITY_PRECISION),
+    )
+    venue_order_id = VenueOrderId("12345")
+    await accept_order(order, venue_order_id)
+
+    exec_client._cache_filled_qty[order.client_order_id] = Quantity(
+        10.0,
+        BETFAIR_QUANTITY_PRECISION,
+    )
+    exec_client._cache_avg_px[order.client_order_id] = 2.5
+
+    # Simulate recent completion
+    exec_client._cache_filled_completed_ns[order.client_order_id] = (
+        exec_client._clock.timestamp_ns()
+    )
+
+    # Act
+    exec_client._sweep_expired_fill_cache()
+
+    # Assert - recent entry retained
+    assert order.client_order_id in exec_client._cache_filled_qty
+    assert order.client_order_id in exec_client._cache_filled_completed_ns
+    assert order.client_order_id in exec_client._cache_avg_px
+
+
+def test_process_order_fill_marks_terminal_on_full_fill(
+    exec_client: BetfairExecutionClient,
+    order_and_cache,
+    monkeypatch,
+):
+    order, instrument = order_and_cache
+    bet_id = "12345"
+
+    exec_client.generate_order_accepted(
+        strategy_id=order.strategy_id,
+        instrument_id=order.instrument_id,
+        client_order_id=order.client_order_id,
+        venue_order_id=VenueOrderId(bet_id),
+        ts_event=0,
+    )
+
+    monkeypatch.setattr(OrderSideParser, "to_nautilus", lambda _side: OrderSide.BUY)
+
+    trade_counter = [0]
+
+    def mock_trade_id(_uo):
+        trade_counter[0] += 1
+        return TradeId(f"TRADE-{trade_counter[0]}")
+
+    monkeypatch.setattr(parsing_requests, "order_to_trade_id", mock_trade_id)
+
+    # Fill for the full order quantity
+    fill = _StubUnmatchedOrder(
+        id=bet_id,
+        side="L",
+        p=2.0,
+        avp=2.0,
+        s=order.quantity.as_double(),
+        sm=order.quantity.as_double(),
+        md=1635217893000,
+        pt=None,
+        ot=None,
+        pd=0,
+        sc=0,
+        sl=0,
+        sv=0,
+        lapse_status_reason_code=None,
+        status="E",
+    )
+
+    exec_client._handle_stream_executable_order_update(fill, order.client_order_id, instrument)
+
+    # Assert - fully filled order is marked terminal
+    assert order.client_order_id.value in exec_client._terminal_orders
 
 
 def test_sync_fill_caches_with_multiple_orders(
@@ -2235,9 +2630,9 @@ def test_sync_fill_caches_with_multiple_orders(
         12.0,
         BETFAIR_QUANTITY_PRECISION,
     )
-    assert TradeId("TRADE-A") in exec_client._published_executions[order1.client_order_id]
-    assert TradeId("TRADE-B1") in exec_client._published_executions[order2.client_order_id]
-    assert TradeId("TRADE-B2") in exec_client._published_executions[order2.client_order_id]
+    assert "TRADE-A" in exec_client._published_executions
+    assert "TRADE-B1" in exec_client._published_executions
+    assert "TRADE-B2" in exec_client._published_executions
 
 
 def test_sync_fill_caches_ignores_orders_without_fills(
@@ -2290,10 +2685,7 @@ def test_sync_fill_caches_ignores_orders_without_fills(
     # Assert
     assert order_with_fill.client_order_id in exec_client._cache_filled_qty
     assert order_no_fill.client_order_id not in exec_client._cache_filled_qty
-    assert (
-        TradeId("TRADE-001") in exec_client._published_executions[order_with_fill.client_order_id]
-    )
-    assert len(exec_client._published_executions[order_no_fill.client_order_id]) == 0
+    assert "TRADE-001" in exec_client._published_executions
 
 
 @pytest.mark.asyncio
@@ -2324,14 +2716,13 @@ async def test_sync_fill_caches_does_not_duplicate_existing_trade_ids(
 
     # Pre-populate cache with the same trade ID
     exec_client._cache_filled_qty[order.client_order_id] = Quantity(5.0, BETFAIR_QUANTITY_PRECISION)
-    exec_client._published_executions[order.client_order_id].append(TradeId("TRADE-001"))
+    exec_client._published_executions.add("TRADE-001")
 
     # Act
     exec_client._sync_fill_caches_from_orders()
 
-    # Assert - trade ID should not be duplicated
-    trade_ids = exec_client._published_executions[order.client_order_id]
-    assert trade_ids.count(TradeId("TRADE-001")) == 1
+    # Assert - trade ID should still be present (FifoCache dedupes automatically)
+    assert "TRADE-001" in exec_client._published_executions
 
 
 @pytest.mark.parametrize(
@@ -2423,7 +2814,7 @@ def test_duplicate_trade_id_skips_fill(
         lambda _uo: trade_id,
     )
 
-    exec_client._published_executions[order.client_order_id].append(trade_id)
+    exec_client._published_executions.add(trade_id.value)
 
     unmatched_order = _StubUnmatchedOrder(
         id=bet_id,  # Must match venue_order_id for proper order resolution
@@ -4436,3 +4827,1094 @@ def test_check_cache_against_order_image_filters_markets(
 
     # Act - should complete without checking the filtered market
     exec_client.check_cache_against_order_image(ocm)
+
+
+@pytest.mark.asyncio
+async def test_submit_order_network_error_stays_submitted(
+    exec_client: BetfairExecutionClient,
+    strategy,
+    test_order,
+    events,
+):
+    # Arrange
+    with patch.object(
+        exec_client._client,
+        "place_orders",
+        new_callable=AsyncMock,
+        side_effect=TimeoutError("Connection timed out"),
+    ):
+        # Act
+        strategy.submit_order(test_order)
+        await asyncio.sleep(0)
+
+    # Assert - order stays SUBMITTED and rfo is retained for stream matching
+    assert test_order.status == OrderStatus.SUBMITTED
+    rfo = make_customer_order_ref(test_order.client_order_id)
+    assert rfo in exec_client._customer_order_refs
+    rejected_events = [e for e in test_order.events if isinstance(e, OrderRejected)]
+    assert len(rejected_events) == 0
+
+
+@pytest.mark.asyncio
+async def test_submit_order_betfair_error_rejects_immediately(
+    exec_client: BetfairExecutionClient,
+    strategy,
+    test_order,
+    events,
+):
+    # Arrange
+    with patch.object(
+        exec_client._client,
+        "place_orders",
+        new_callable=AsyncMock,
+        side_effect=BetfairError("PERMISSION_DENIED"),
+    ):
+        # Act
+        strategy.submit_order(test_order)
+        await asyncio.sleep(0)
+
+    # Assert - BetfairError means venue explicitly rejected
+    assert test_order.status == OrderStatus.REJECTED
+    rfo = make_customer_order_ref(test_order.client_order_id)
+    assert rfo not in exec_client._customer_order_refs
+
+
+@pytest.mark.asyncio
+async def test_submit_order_list_success(
+    exec_client: BetfairExecutionClient,
+    strategy,
+    instrument,
+    strategy_id,
+):
+    # Arrange
+    order1 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(2.58),
+        quantity=Quantity.from_str("10"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("OL-order-1"),
+    )
+    order2 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(3.0),
+        quantity=Quantity.from_str("5"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("OL-order-2"),
+    )
+    for order in [order1, order2]:
+        exec_client.submit_order = MagicMock()  # type: ignore[method-assign]
+        strategy.submit_order(order)
+        await asyncio.sleep(0)
+
+    order_list = OrderList(
+        order_list_id=OrderListId("OL-001"),
+        orders=[order1, order2],
+    )
+    command = SubmitOrderList(
+        trader_id=order1.trader_id,
+        strategy_id=strategy_id,
+        order_list=order_list,
+        command_id=UUID4(),
+        ts_init=0,
+    )
+
+    mock_betfair_request(
+        exec_client._client,
+        BetfairResponses.betting_place_order_batch_success(),
+    )
+
+    # Act
+    await exec_client._submit_order_list(command)
+
+    # Assert
+    _, submitted1, accepted1 = order1.events
+    assert isinstance(submitted1, OrderSubmitted)
+    assert isinstance(accepted1, OrderAccepted)
+    assert accepted1.venue_order_id == VenueOrderId("228302937743")
+
+    _, submitted2, accepted2 = order2.events
+    assert isinstance(submitted2, OrderSubmitted)
+    assert isinstance(accepted2, OrderAccepted)
+    assert accepted2.venue_order_id == VenueOrderId("228302937744")
+
+
+@pytest.mark.asyncio
+async def test_submit_order_list_partial_failure(
+    exec_client: BetfairExecutionClient,
+    strategy,
+    instrument,
+    strategy_id,
+):
+    # Arrange
+    order1 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(2.58),
+        quantity=Quantity.from_str("10"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("OL-order-1"),
+    )
+    order2 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(3.0),
+        quantity=Quantity.from_str("5"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("OL-order-2"),
+    )
+    for order in [order1, order2]:
+        exec_client.submit_order = MagicMock()  # type: ignore[method-assign]
+        strategy.submit_order(order)
+        await asyncio.sleep(0)
+
+    order_list = OrderList(
+        order_list_id=OrderListId("OL-001"),
+        orders=[order1, order2],
+    )
+    command = SubmitOrderList(
+        trader_id=order1.trader_id,
+        strategy_id=strategy_id,
+        order_list=order_list,
+        command_id=UUID4(),
+        ts_init=0,
+    )
+
+    mock_betfair_request(
+        exec_client._client,
+        BetfairResponses.betting_place_order_batch_partial_failure(),
+    )
+
+    # Act
+    await exec_client._submit_order_list(command)
+
+    # Assert
+    _, submitted1, accepted1 = order1.events
+    assert isinstance(submitted1, OrderSubmitted)
+    assert isinstance(accepted1, OrderAccepted)
+    assert accepted1.venue_order_id == VenueOrderId("228302937743")
+
+    _, submitted2, rejected2 = order2.events
+    assert isinstance(submitted2, OrderSubmitted)
+    assert isinstance(rejected2, OrderRejected)
+    assert "ERROR_IN_ORDER" in rejected2.reason
+
+
+@pytest.mark.asyncio
+async def test_submit_order_list_result_level_failure(
+    exec_client: BetfairExecutionClient,
+    strategy,
+    instrument,
+    strategy_id,
+):
+    # Arrange
+    order1 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(2.58),
+        quantity=Quantity.from_str("10"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("OL-order-1"),
+    )
+    order2 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(3.0),
+        quantity=Quantity.from_str("5"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("OL-order-2"),
+    )
+    for order in [order1, order2]:
+        exec_client.submit_order = MagicMock()  # type: ignore[method-assign]
+        strategy.submit_order(order)
+        await asyncio.sleep(0)
+
+    order_list = OrderList(
+        order_list_id=OrderListId("OL-001"),
+        orders=[order1, order2],
+    )
+    command = SubmitOrderList(
+        trader_id=order1.trader_id,
+        strategy_id=strategy_id,
+        order_list=order_list,
+        command_id=UUID4(),
+        ts_init=0,
+    )
+
+    mock_response = SimpleNamespace(
+        status=ExecutionReportStatus.FAILURE,
+        error_code=ExecutionReportErrorCode.INSUFFICIENT_FUNDS,
+        instruction_reports=None,
+    )
+    with patch.object(
+        exec_client._client,
+        "place_orders",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ):
+        # Act
+        await exec_client._submit_order_list(command)
+
+    # Assert
+    rejected1 = [e for e in order1.events if isinstance(e, OrderRejected)]
+    rejected2 = [e for e in order2.events if isinstance(e, OrderRejected)]
+    assert len(rejected1) == 1
+    assert len(rejected2) == 1
+    assert "INSUFFICIENT_FUNDS" in rejected1[0].reason
+    assert "INSUFFICIENT_FUNDS" in rejected2[0].reason
+
+
+@pytest.mark.asyncio
+async def test_submit_order_list_result_level_timeout_leaves_submitted(
+    exec_client: BetfairExecutionClient,
+    strategy,
+    instrument,
+    strategy_id,
+):
+    # Arrange
+    order1 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(2.58),
+        quantity=Quantity.from_str("10"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("OL-order-1"),
+    )
+    order2 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(3.0),
+        quantity=Quantity.from_str("5"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("OL-order-2"),
+    )
+    for order in [order1, order2]:
+        exec_client.submit_order = MagicMock()  # type: ignore[method-assign]
+        strategy.submit_order(order)
+        await asyncio.sleep(0)
+
+    order_list = OrderList(
+        order_list_id=OrderListId("OL-001"),
+        orders=[order1, order2],
+    )
+    command = SubmitOrderList(
+        trader_id=order1.trader_id,
+        strategy_id=strategy_id,
+        order_list=order_list,
+        command_id=UUID4(),
+        ts_init=0,
+    )
+
+    mock_response = SimpleNamespace(
+        status=ExecutionReportStatus.TIMEOUT,
+        error_code=None,
+        instruction_reports=None,
+    )
+    with patch.object(
+        exec_client._client,
+        "place_orders",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ):
+        # Act
+        await exec_client._submit_order_list(command)
+
+    # Assert
+    assert order1.status == OrderStatus.SUBMITTED
+    assert order2.status == OrderStatus.SUBMITTED
+
+
+@pytest.mark.asyncio
+async def test_submit_order_list_network_error(
+    exec_client: BetfairExecutionClient,
+    strategy,
+    instrument,
+    strategy_id,
+):
+    # Arrange
+    order1 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(2.58),
+        quantity=Quantity.from_str("10"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("OL-order-1"),
+    )
+    order2 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(3.0),
+        quantity=Quantity.from_str("5"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("OL-order-2"),
+    )
+    for order in [order1, order2]:
+        exec_client.submit_order = MagicMock()  # type: ignore[method-assign]
+        strategy.submit_order(order)
+        await asyncio.sleep(0)
+
+    order_list = OrderList(
+        order_list_id=OrderListId("OL-001"),
+        orders=[order1, order2],
+    )
+    command = SubmitOrderList(
+        trader_id=order1.trader_id,
+        strategy_id=strategy_id,
+        order_list=order_list,
+        command_id=UUID4(),
+        ts_init=0,
+    )
+
+    with patch.object(
+        exec_client._client,
+        "place_orders",
+        new_callable=AsyncMock,
+        side_effect=APINGException("PERMISSION_DENIED"),
+    ):
+        # Act
+        await exec_client._submit_order_list(command)
+
+    # Assert
+    assert order1.status == OrderStatus.REJECTED
+    assert order2.status == OrderStatus.REJECTED
+
+
+@pytest.mark.asyncio
+async def test_submit_order_list_non_betfair_error_leaves_submitted(
+    exec_client: BetfairExecutionClient,
+    strategy,
+    instrument,
+    strategy_id,
+):
+    # Arrange
+    order1 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(2.58),
+        quantity=Quantity.from_str("10"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("OL-order-1"),
+    )
+    order2 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(3.0),
+        quantity=Quantity.from_str("5"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("OL-order-2"),
+    )
+    for order in [order1, order2]:
+        exec_client.submit_order = MagicMock()  # type: ignore[method-assign]
+        strategy.submit_order(order)
+        await asyncio.sleep(0)
+
+    order_list = OrderList(
+        order_list_id=OrderListId("OL-001"),
+        orders=[order1, order2],
+    )
+    command = SubmitOrderList(
+        trader_id=order1.trader_id,
+        strategy_id=strategy_id,
+        order_list=order_list,
+        command_id=UUID4(),
+        ts_init=0,
+    )
+
+    with patch.object(
+        exec_client._client,
+        "place_orders",
+        new_callable=AsyncMock,
+        side_effect=ConnectionError("Connection reset"),
+    ):
+        # Act
+        await exec_client._submit_order_list(command)
+
+    # Assert
+    assert order1.status == OrderStatus.SUBMITTED
+    assert order2.status == OrderStatus.SUBMITTED
+
+
+@pytest.mark.asyncio
+async def test_batch_cancel_orders_success(
+    exec_client: BetfairExecutionClient,
+    strategy,
+    instrument,
+    strategy_id,
+    accept_order,
+):
+    # Arrange
+    order1 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(2.0),
+        quantity=Quantity.from_str("10"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("BC-order-1"),
+    )
+    order2 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(3.0),
+        quantity=Quantity.from_str("5"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("BC-order-2"),
+    )
+    venue_order_id1 = VenueOrderId("1")
+    venue_order_id2 = VenueOrderId("2")
+    await accept_order(order=order1, venue_order_id=venue_order_id1)
+    await accept_order(order=order2, venue_order_id=venue_order_id2)
+
+    cancel1 = TestCommandStubs.cancel_order_command(order=order1)
+    cancel2 = TestCommandStubs.cancel_order_command(order=order2)
+    command = BatchCancelOrders(
+        trader_id=order1.trader_id,
+        strategy_id=strategy_id,
+        instrument_id=instrument.id,
+        cancels=[cancel1, cancel2],
+        command_id=UUID4(),
+        ts_init=0,
+    )
+
+    mock_betfair_request(
+        exec_client._client,
+        BetfairResponses.betting_cancel_orders_batch_success(),
+    )
+
+    # Act
+    await exec_client._batch_cancel_orders(command)
+
+    # Assert
+    canceled1 = [e for e in order1.events if isinstance(e, OrderCanceled)]
+    canceled2 = [e for e in order2.events if isinstance(e, OrderCanceled)]
+    assert len(canceled1) == 1
+    assert len(canceled2) == 1
+    assert canceled1[0].venue_order_id == venue_order_id1
+    assert canceled2[0].venue_order_id == venue_order_id2
+
+
+@pytest.mark.asyncio
+async def test_batch_cancel_orders_partial_failure(
+    exec_client: BetfairExecutionClient,
+    strategy,
+    instrument,
+    strategy_id,
+    accept_order,
+):
+    # Arrange
+    order1 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(2.0),
+        quantity=Quantity.from_str("10"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("BC-order-1"),
+    )
+    order2 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(3.0),
+        quantity=Quantity.from_str("5"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("BC-order-2"),
+    )
+    venue_order_id1 = VenueOrderId("1")
+    venue_order_id2 = VenueOrderId("2")
+    await accept_order(order=order1, venue_order_id=venue_order_id1)
+    await accept_order(order=order2, venue_order_id=venue_order_id2)
+
+    cancel1 = TestCommandStubs.cancel_order_command(order=order1)
+    cancel2 = TestCommandStubs.cancel_order_command(order=order2)
+    command = BatchCancelOrders(
+        trader_id=order1.trader_id,
+        strategy_id=strategy_id,
+        instrument_id=instrument.id,
+        cancels=[cancel1, cancel2],
+        command_id=UUID4(),
+        ts_init=0,
+    )
+
+    mock_betfair_request(
+        exec_client._client,
+        BetfairResponses.betting_cancel_orders_batch_partial_failure(),
+    )
+
+    # Act
+    await exec_client._batch_cancel_orders(command)
+
+    # Assert
+    canceled1 = [e for e in order1.events if isinstance(e, OrderCanceled)]
+    assert len(canceled1) == 1
+    assert canceled1[0].venue_order_id == venue_order_id1
+
+    cancel_rejected2 = [e for e in order2.events if isinstance(e, OrderCancelRejected)]
+    assert len(cancel_rejected2) == 1
+    assert "ERROR_IN_ORDER" in cancel_rejected2[0].reason
+
+
+@pytest.mark.asyncio
+async def test_batch_cancel_orders_network_error(
+    exec_client: BetfairExecutionClient,
+    strategy,
+    instrument,
+    strategy_id,
+    accept_order,
+):
+    # Arrange
+    order1 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(2.0),
+        quantity=Quantity.from_str("10"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("BC-order-1"),
+    )
+    order2 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(3.0),
+        quantity=Quantity.from_str("5"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("BC-order-2"),
+    )
+    venue_order_id1 = VenueOrderId("1")
+    venue_order_id2 = VenueOrderId("2")
+    await accept_order(order=order1, venue_order_id=venue_order_id1)
+    await accept_order(order=order2, venue_order_id=venue_order_id2)
+
+    cancel1 = TestCommandStubs.cancel_order_command(order=order1)
+    cancel2 = TestCommandStubs.cancel_order_command(order=order2)
+    command = BatchCancelOrders(
+        trader_id=order1.trader_id,
+        strategy_id=strategy_id,
+        instrument_id=instrument.id,
+        cancels=[cancel1, cancel2],
+        command_id=UUID4(),
+        ts_init=0,
+    )
+
+    with patch.object(
+        exec_client._client,
+        "cancel_orders",
+        new_callable=AsyncMock,
+        side_effect=BetfairError("PERMISSION_DENIED"),
+    ):
+        # Act
+        await exec_client._batch_cancel_orders(command)
+
+    # Assert
+    cancel_rejected1 = [e for e in order1.events if isinstance(e, OrderCancelRejected)]
+    cancel_rejected2 = [e for e in order2.events if isinstance(e, OrderCancelRejected)]
+    assert len(cancel_rejected1) == 1
+    assert len(cancel_rejected2) == 1
+
+
+@pytest.mark.asyncio
+async def test_batch_cancel_orders_with_none_venue_order_id(
+    exec_client: BetfairExecutionClient,
+    strategy,
+    instrument,
+    strategy_id,
+    accept_order,
+):
+    # Arrange
+    order1 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(2.0),
+        quantity=Quantity.from_str("10"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("BC-order-1"),
+    )
+    order2 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(3.0),
+        quantity=Quantity.from_str("5"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("BC-order-2"),
+    )
+    venue_order_id1 = VenueOrderId("1")
+    await accept_order(order=order1, venue_order_id=venue_order_id1)
+
+    exec_client.submit_order = MagicMock()  # type: ignore[method-assign]
+    strategy.submit_order(order2)
+    await asyncio.sleep(0)
+
+    cancel1 = TestCommandStubs.cancel_order_command(order=order1)
+    cancel2 = CancelOrder(
+        trader_id=order2.trader_id,
+        strategy_id=order2.strategy_id,
+        instrument_id=order2.instrument_id,
+        client_order_id=order2.client_order_id,
+        venue_order_id=None,
+        command_id=UUID4(),
+        ts_init=0,
+    )
+    command = BatchCancelOrders(
+        trader_id=order1.trader_id,
+        strategy_id=strategy_id,
+        instrument_id=instrument.id,
+        cancels=[cancel1, cancel2],
+        command_id=UUID4(),
+        ts_init=0,
+    )
+
+    mock_response = SimpleNamespace(
+        status=ExecutionReportStatus.SUCCESS,
+        error_code=None,
+        instruction_reports=[
+            SimpleNamespace(
+                status=InstructionReportStatus.SUCCESS,
+                error_code=None,
+                instruction=SimpleNamespace(bet_id="1"),
+                size_cancelled=10.0,
+            ),
+        ],
+    )
+    with patch.object(
+        exec_client._client,
+        "cancel_orders",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ):
+        # Act
+        await exec_client._batch_cancel_orders(command)
+
+    # Assert
+    cancel_rejected2 = [e for e in order2.events if isinstance(e, OrderCancelRejected)]
+    assert len(cancel_rejected2) == 1
+    assert "ORDER_MISSING_VENUE_ORDER_ID" in cancel_rejected2[0].reason
+
+    canceled1 = [e for e in order1.events if isinstance(e, OrderCanceled)]
+    assert len(canceled1) == 1
+
+
+@pytest.mark.asyncio
+async def test_submit_order_list_quote_quantity_denied(
+    exec_client: BetfairExecutionClient,
+    instrument,
+    strategy_id,
+):
+    # Arrange
+    order1 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(2.58),
+        quantity=Quantity.from_str("10"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("OL-order-1"),
+    )
+    order2 = LimitOrder(
+        trader_id=order1.trader_id,
+        strategy_id=strategy_id,
+        instrument_id=instrument.id,
+        client_order_id=ClientOrderId("OL-order-2"),
+        order_side=OrderSide.BUY,
+        quantity=Quantity.from_str("5"),
+        price=betfair_float_to_price(3.0),
+        time_in_force=TimeInForce.GTC,
+        expire_time_ns=0,
+        init_id=UUID4(),
+        ts_init=0,
+        quote_quantity=True,
+    )
+
+    exec_client._cache.add_order(order1)
+    exec_client._cache.add_order(order2)
+
+    order_list = OrderList(
+        order_list_id=OrderListId("OL-001"),
+        orders=[order1, order2],
+    )
+    command = SubmitOrderList(
+        trader_id=order1.trader_id,
+        strategy_id=strategy_id,
+        order_list=order_list,
+        command_id=UUID4(),
+        ts_init=0,
+    )
+
+    # Act
+    await exec_client._submit_order_list(command)
+
+    # Assert
+    denied1 = [e for e in order1.events if isinstance(e, OrderDenied)]
+    denied2 = [e for e in order2.events if isinstance(e, OrderDenied)]
+    assert len(denied1) == 1
+    assert len(denied2) == 1
+    assert "UNSUPPORTED_QUOTE_QUANTITY" in denied1[0].reason
+    assert "UNSUPPORTED_QUOTE_QUANTITY" in denied2[0].reason
+
+    submitted1 = [e for e in order1.events if isinstance(e, OrderSubmitted)]
+    submitted2 = [e for e in order2.events if isinstance(e, OrderSubmitted)]
+    assert len(submitted1) == 0
+    assert len(submitted2) == 0
+
+
+@pytest.mark.asyncio
+async def test_batch_cancel_orders_bet_taken_or_lapsed(
+    exec_client: BetfairExecutionClient,
+    strategy,
+    instrument,
+    strategy_id,
+    accept_order,
+):
+    # Arrange
+    order1 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(2.0),
+        quantity=Quantity.from_str("10"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("BC-order-1"),
+    )
+    venue_order_id1 = VenueOrderId("1")
+    await accept_order(order=order1, venue_order_id=venue_order_id1)
+
+    cancel1 = TestCommandStubs.cancel_order_command(order=order1)
+    command = BatchCancelOrders(
+        trader_id=order1.trader_id,
+        strategy_id=strategy_id,
+        instrument_id=instrument.id,
+        cancels=[cancel1],
+        command_id=UUID4(),
+        ts_init=0,
+    )
+
+    mock_response = SimpleNamespace(
+        status=ExecutionReportStatus.SUCCESS,
+        error_code=None,
+        instruction_reports=[
+            SimpleNamespace(
+                status=InstructionReportStatus.FAILURE,
+                error_code=InstructionReportErrorCode.BET_TAKEN_OR_LAPSED,
+                instruction=SimpleNamespace(bet_id="1"),
+            ),
+        ],
+    )
+    with patch.object(
+        exec_client._client,
+        "cancel_orders",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ):
+        # Act
+        await exec_client._batch_cancel_orders(command)
+
+    # Assert
+    canceled = [e for e in order1.events if isinstance(e, OrderCanceled)]
+    assert len(canceled) == 1
+    assert canceled[0].venue_order_id == venue_order_id1
+
+
+@pytest.mark.asyncio
+async def test_submit_order_list_timeout_leaves_submitted(
+    exec_client: BetfairExecutionClient,
+    strategy,
+    instrument,
+    strategy_id,
+):
+    # Arrange
+    order1 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(2.58),
+        quantity=Quantity.from_str("10"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("OL-order-1"),
+    )
+    order2 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(3.0),
+        quantity=Quantity.from_str("5"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("OL-order-2"),
+    )
+    for order in [order1, order2]:
+        exec_client.submit_order = MagicMock()  # type: ignore[method-assign]
+        strategy.submit_order(order)
+        await asyncio.sleep(0)
+
+    order_list = OrderList(
+        order_list_id=OrderListId("OL-001"),
+        orders=[order1, order2],
+    )
+    command = SubmitOrderList(
+        trader_id=order1.trader_id,
+        strategy_id=strategy_id,
+        order_list=order_list,
+        command_id=UUID4(),
+        ts_init=0,
+    )
+
+    mock_response = SimpleNamespace(
+        status=ExecutionReportStatus.SUCCESS,
+        error_code=None,
+        instruction_reports=[
+            SimpleNamespace(
+                status=InstructionReportStatus.SUCCESS,
+                error_code=None,
+                bet_id="228302937743",
+            ),
+            SimpleNamespace(
+                status=InstructionReportStatus.TIMEOUT,
+                error_code=None,
+                bet_id=None,
+            ),
+        ],
+    )
+    with patch.object(
+        exec_client._client,
+        "place_orders",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ):
+        # Act
+        await exec_client._submit_order_list(command)
+
+    # Assert
+    assert order1.status == OrderStatus.ACCEPTED
+    assert order2.status == OrderStatus.SUBMITTED
+
+
+@pytest.mark.asyncio
+async def test_batch_cancel_orders_timeout_leaves_unchanged(
+    exec_client: BetfairExecutionClient,
+    strategy,
+    instrument,
+    strategy_id,
+    accept_order,
+):
+    # Arrange
+    order1 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(2.0),
+        quantity=Quantity.from_str("10"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("BC-order-1"),
+    )
+    order2 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(3.0),
+        quantity=Quantity.from_str("5"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("BC-order-2"),
+    )
+    venue_order_id1 = VenueOrderId("1")
+    venue_order_id2 = VenueOrderId("2")
+    await accept_order(order=order1, venue_order_id=venue_order_id1)
+    await accept_order(order=order2, venue_order_id=venue_order_id2)
+
+    cancel1 = TestCommandStubs.cancel_order_command(order=order1)
+    cancel2 = TestCommandStubs.cancel_order_command(order=order2)
+    command = BatchCancelOrders(
+        trader_id=order1.trader_id,
+        strategy_id=strategy_id,
+        instrument_id=instrument.id,
+        cancels=[cancel1, cancel2],
+        command_id=UUID4(),
+        ts_init=0,
+    )
+
+    mock_response = SimpleNamespace(
+        status=ExecutionReportStatus.SUCCESS,
+        error_code=None,
+        instruction_reports=[
+            SimpleNamespace(
+                status=InstructionReportStatus.SUCCESS,
+                error_code=None,
+                instruction=SimpleNamespace(bet_id="1"),
+                size_cancelled=10.0,
+            ),
+            SimpleNamespace(
+                status=InstructionReportStatus.TIMEOUT,
+                error_code=None,
+                instruction=SimpleNamespace(bet_id="2"),
+            ),
+        ],
+    )
+    with patch.object(
+        exec_client._client,
+        "cancel_orders",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ):
+        # Act
+        await exec_client._batch_cancel_orders(command)
+
+    # Assert
+    assert order1.status == OrderStatus.CANCELED
+    assert order2.status == OrderStatus.ACCEPTED
+
+
+@pytest.mark.asyncio
+async def test_submit_order_list_unsupported_order_type_denied(
+    exec_client: BetfairExecutionClient,
+    instrument,
+    strategy_id,
+):
+    # Arrange
+    order1 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(2.58),
+        quantity=Quantity.from_str("10"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("OL-order-1"),
+    )
+    order2 = StopMarketOrder(
+        trader_id=order1.trader_id,
+        strategy_id=strategy_id,
+        instrument_id=instrument.id,
+        client_order_id=ClientOrderId("OL-order-2"),
+        order_side=OrderSide.SELL,
+        quantity=Quantity.from_str("5"),
+        trigger_price=betfair_float_to_price(3.0),
+        trigger_type=TriggerType.LAST_PRICE,
+        init_id=UUID4(),
+        ts_init=0,
+        time_in_force=TimeInForce.GTC,
+    )
+    exec_client._cache.add_order(order1)
+    exec_client._cache.add_order(order2)
+
+    order_list = OrderList(
+        order_list_id=OrderListId("OL-001"),
+        orders=[order1, order2],
+    )
+    command = SubmitOrderList(
+        trader_id=order1.trader_id,
+        strategy_id=strategy_id,
+        order_list=order_list,
+        command_id=UUID4(),
+        ts_init=0,
+    )
+
+    # Act
+    await exec_client._submit_order_list(command)
+
+    # Assert
+    denied1 = [e for e in order1.events if isinstance(e, OrderDenied)]
+    denied2 = [e for e in order2.events if isinstance(e, OrderDenied)]
+    assert len(denied1) == 1
+    assert len(denied2) == 1
+
+    submitted1 = [e for e in order1.events if isinstance(e, OrderSubmitted)]
+    submitted2 = [e for e in order2.events if isinstance(e, OrderSubmitted)]
+    assert len(submitted1) == 0
+    assert len(submitted2) == 0
+
+
+@pytest.mark.asyncio
+async def test_batch_cancel_orders_result_level_timeout_leaves_unchanged(
+    exec_client: BetfairExecutionClient,
+    strategy,
+    instrument,
+    strategy_id,
+    accept_order,
+):
+    # Arrange
+    order1 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(2.0),
+        quantity=Quantity.from_str("10"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("BC-order-1"),
+    )
+    venue_order_id1 = VenueOrderId("1")
+    await accept_order(order=order1, venue_order_id=venue_order_id1)
+
+    cancel1 = TestCommandStubs.cancel_order_command(order=order1)
+    command = BatchCancelOrders(
+        trader_id=order1.trader_id,
+        strategy_id=strategy_id,
+        instrument_id=instrument.id,
+        cancels=[cancel1],
+        command_id=UUID4(),
+        ts_init=0,
+    )
+
+    mock_response = SimpleNamespace(
+        status=ExecutionReportStatus.TIMEOUT,
+        error_code=None,
+        instruction_reports=None,
+    )
+    with patch.object(
+        exec_client._client,
+        "cancel_orders",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ):
+        # Act
+        await exec_client._batch_cancel_orders(command)
+
+    # Assert
+    assert order1.status == OrderStatus.ACCEPTED
+    cancel_rejected = [e for e in order1.events if isinstance(e, OrderCancelRejected)]
+    assert len(cancel_rejected) == 0
+
+
+@pytest.mark.asyncio
+async def test_batch_cancel_orders_missing_optional_fields(
+    exec_client: BetfairExecutionClient,
+    strategy,
+    instrument,
+    strategy_id,
+    accept_order,
+):
+    # Arrange
+    order1 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(2.0),
+        quantity=Quantity.from_str("10"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("BC-order-1"),
+    )
+    order2 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(3.0),
+        quantity=Quantity.from_str("5"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("BC-order-2"),
+    )
+    order3 = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=betfair_float_to_price(4.0),
+        quantity=Quantity.from_str("3"),
+        strategy_id=strategy_id,
+        client_order_id=ClientOrderId("BC-order-3"),
+    )
+    venue_order_id1 = VenueOrderId("1")
+    venue_order_id2 = VenueOrderId("2")
+    venue_order_id3 = VenueOrderId("3")
+    await accept_order(order=order1, venue_order_id=venue_order_id1)
+    await accept_order(order=order2, venue_order_id=venue_order_id2)
+    await accept_order(order=order3, venue_order_id=venue_order_id3)
+
+    cancel1 = TestCommandStubs.cancel_order_command(order=order1)
+    cancel2 = TestCommandStubs.cancel_order_command(order=order2)
+    cancel3 = TestCommandStubs.cancel_order_command(order=order3)
+    command = BatchCancelOrders(
+        trader_id=order1.trader_id,
+        strategy_id=strategy_id,
+        instrument_id=instrument.id,
+        cancels=[cancel1, cancel2, cancel3],
+        command_id=UUID4(),
+        ts_init=0,
+    )
+
+    mock_response = SimpleNamespace(
+        status=ExecutionReportStatus.SUCCESS,
+        error_code=None,
+        instruction_reports=[
+            SimpleNamespace(
+                status=InstructionReportStatus.TIMEOUT,
+                error_code=None,
+                instruction=None,
+            ),
+            SimpleNamespace(
+                status=InstructionReportStatus.FAILURE,
+                error_code=None,
+                instruction=None,
+            ),
+            SimpleNamespace(
+                status=InstructionReportStatus.SUCCESS,
+                error_code=None,
+                instruction=SimpleNamespace(bet_id="3"),
+                size_cancelled=3.0,
+            ),
+        ],
+    )
+    with patch.object(
+        exec_client._client,
+        "cancel_orders",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ):
+        # Act
+        await exec_client._batch_cancel_orders(command)
+
+    # Assert
+    assert order1.status == OrderStatus.ACCEPTED
+    assert order2.status == OrderStatus.ACCEPTED
+    cancel_rejected2 = [e for e in order2.events if isinstance(e, OrderCancelRejected)]
+    assert len(cancel_rejected2) == 1
+    assert "UNKNOWN_ERROR" in cancel_rejected2[0].reason
+    assert order3.status == OrderStatus.CANCELED

@@ -29,14 +29,14 @@ use nautilus_model::{
 use pyo3::{
     conversion::IntoPyObjectExt,
     prelude::*,
-    types::{PyDict, PyList},
+    types::{PyDict, PyList, PyTuple},
 };
 
 use crate::{
     common::enums::{
         OKXAlgoOrderType, OKXInstrumentType, OKXOrderStatus, OKXPositionMode, OKXTradeMode,
     },
-    http::{client::OKXHttpClient, error::OKXHttpError},
+    http::{client::OKXHttpClient, error::OKXHttpError, models::OKXCancelAlgoOrderRequest},
 };
 
 #[pymethods]
@@ -182,7 +182,7 @@ impl OKXHttpClient {
         let client = self.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let instruments = client
+            let (instruments, inst_id_codes) = client
                 .request_instruments(instrument_type, instrument_family)
                 .await
                 .map_err(to_pyvalue_err)?;
@@ -192,11 +192,20 @@ impl OKXHttpClient {
                     .into_iter()
                     .map(|inst| instrument_any_to_pyobject(py, inst))
                     .collect();
-                let pylist = PyList::new(py, py_instruments?)
+                let instruments_list = PyList::new(py, py_instruments?).unwrap();
+
+                // Convert inst_id_codes to list of (inst_id: str, inst_id_code: int) tuples
+                let py_codes: Vec<_> = inst_id_codes
+                    .into_iter()
+                    .map(|(inst_id, code)| (inst_id.to_string(), code))
+                    .collect();
+                let codes_list = PyList::new(py, py_codes).unwrap();
+
+                let result = PyTuple::new(py, [instruments_list.as_any(), codes_list.as_any()])
                     .unwrap()
                     .into_any()
                     .unbind();
-                Ok(pylist)
+                Ok(result)
             })
         })
     }
@@ -506,6 +515,9 @@ impl OKXHttpClient {
         sl_ord_px=None,
         cxl_on_close_pos=None,
         algo_order_type=None,
+        callback_ratio=None,
+        callback_spread=None,
+        activation_price=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn py_place_algo_order<'py>(
@@ -532,6 +544,9 @@ impl OKXHttpClient {
         sl_ord_px: Option<Price>,
         cxl_on_close_pos: Option<bool>,
         algo_order_type: Option<String>,
+        callback_ratio: Option<String>,
+        callback_spread: Option<String>,
+        activation_price: Option<Price>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
 
@@ -569,6 +584,9 @@ impl OKXHttpClient {
                     sl_ord_px,
                     cxl_on_close_pos,
                     algo_order_type,
+                    callback_ratio,
+                    callback_spread,
+                    activation_price,
                 )
                 .await
                 .map_err(to_pyvalue_err)?;
@@ -579,12 +597,15 @@ impl OKXHttpClient {
                 if let Some(algo_cl_ord_id) = resp.algo_cl_ord_id {
                     dict.set_item("algo_cl_ord_id", algo_cl_ord_id)?;
                 }
+
                 if let Some(s_code) = resp.s_code {
                     dict.set_item("s_code", s_code)?;
                 }
+
                 if let Some(s_msg) = resp.s_msg {
                     dict.set_item("s_msg", s_msg)?;
                 }
+
                 if let Some(req_id) = resp.req_id {
                     dict.set_item("req_id", req_id)?;
                 }
@@ -614,6 +635,7 @@ impl OKXHttpClient {
                 if let Some(s_code) = resp.s_code {
                     dict.set_item("s_code", s_code)?;
                 }
+
                 if let Some(s_msg) = resp.s_msg {
                     dict.set_item("s_msg", s_msg)?;
                 }
@@ -622,10 +644,11 @@ impl OKXHttpClient {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(name = "amend_algo_order")]
     #[pyo3(signature = (
         instrument_id,
-        algo_id=None,
+        algo_id,
         algo_cl_ord_id=None,
         req_id=None,
         new_sz=None,
@@ -638,13 +661,15 @@ impl OKXHttpClient {
         new_trigger_px=None,
         new_ord_px=None,
         new_trigger_px_type=None,
+        new_callback_ratio=None,
+        new_callback_spread=None,
+        new_activation_price=None,
     ))]
-    #[allow(clippy::too_many_arguments)]
     fn py_amend_algo_order<'py>(
         &self,
         py: Python<'py>,
         instrument_id: InstrumentId,
-        algo_id: Option<String>,
+        algo_id: String,
         algo_cl_ord_id: Option<String>,
         req_id: Option<String>,
         new_sz: Option<Quantity>,
@@ -657,6 +682,9 @@ impl OKXHttpClient {
         new_trigger_px: Option<Price>,
         new_ord_px: Option<Price>,
         new_trigger_px_type: Option<TriggerType>,
+        new_callback_ratio: Option<String>,
+        new_callback_spread: Option<String>,
+        new_activation_price: Option<Price>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
 
@@ -677,6 +705,186 @@ impl OKXHttpClient {
                     new_trigger_px,
                     new_ord_px,
                     new_trigger_px_type,
+                    new_callback_ratio,
+                    new_callback_spread,
+                    new_activation_price,
+                )
+                .await
+                .map_err(to_pyvalue_err)?;
+
+            Python::attach(|py| {
+                let dict = PyDict::new(py);
+                dict.set_item("algo_id", resp.algo_id)?;
+                if let Some(s_code) = resp.s_code {
+                    dict.set_item("s_code", s_code)?;
+                }
+
+                if let Some(s_msg) = resp.s_msg {
+                    dict.set_item("s_msg", s_msg)?;
+                }
+                Ok(dict.into_py_any_unwrap(py))
+            })
+        })
+    }
+
+    /// Cancels multiple algo orders in a single request.
+    ///
+    /// Parameters
+    /// ----------
+    /// orders : list[tuple[InstrumentId, str]]
+    ///     List of (instrument_id, algo_id) tuples to cancel.
+    #[pyo3(name = "cancel_algo_orders")]
+    fn py_cancel_algo_orders<'py>(
+        &self,
+        py: Python<'py>,
+        orders: Vec<(InstrumentId, String)>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let requests: Vec<_> = orders
+                .into_iter()
+                .map(|(instrument_id, algo_id)| OKXCancelAlgoOrderRequest {
+                    inst_id: instrument_id.symbol.to_string(),
+                    inst_id_code: None,
+                    algo_id: Some(algo_id),
+                    algo_cl_ord_id: None,
+                })
+                .collect();
+
+            let responses = client
+                .cancel_algo_orders(requests)
+                .await
+                .map_err(to_pyvalue_err)?;
+
+            Python::attach(|py| {
+                let results: Vec<_> = responses
+                    .into_iter()
+                    .map(|resp| {
+                        let dict = PyDict::new(py);
+                        dict.set_item("algo_id", resp.algo_id).expect("set algo_id");
+                        if let Some(s_code) = resp.s_code {
+                            dict.set_item("s_code", s_code).expect("set s_code");
+                        }
+
+                        if let Some(s_msg) = resp.s_msg {
+                            dict.set_item("s_msg", s_msg).expect("set s_msg");
+                        }
+                        dict
+                    })
+                    .collect();
+                let pylist = PyList::new(py, results)?;
+                Ok(pylist.into_py_any_unwrap(py))
+            })
+        })
+    }
+
+    #[pyo3(name = "cancel_advance_algo_order")]
+    fn py_cancel_advance_algo_order<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: InstrumentId,
+        algo_id: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let request = OKXCancelAlgoOrderRequest {
+                inst_id: instrument_id.symbol.to_string(),
+                inst_id_code: None,
+                algo_id: Some(algo_id),
+                algo_cl_ord_id: None,
+            };
+
+            let mut responses = client
+                .cancel_advance_algo_orders(vec![request])
+                .await
+                .map_err(to_pyvalue_err)?;
+
+            let resp = responses
+                .pop()
+                .ok_or_else(|| to_pyvalue_err("Empty response"))?;
+
+            Python::attach(|py| {
+                let dict = PyDict::new(py);
+                dict.set_item("algo_id", resp.algo_id)?;
+
+                if let Some(s_code) = resp.s_code {
+                    dict.set_item("s_code", s_code)?;
+                }
+
+                if let Some(s_msg) = resp.s_msg {
+                    dict.set_item("s_msg", s_msg)?;
+                }
+                Ok(dict.into_py_any_unwrap(py))
+            })
+        })
+    }
+
+    #[pyo3(name = "amend_algo_order")]
+    #[pyo3(signature = (
+        instrument_id,
+        algo_id,
+        algo_cl_ord_id=None,
+        req_id=None,
+        new_sz=None,
+        new_tp_trigger_px=None,
+        new_tp_ord_px=None,
+        new_sl_trigger_px=None,
+        new_sl_ord_px=None,
+        new_tp_trigger_px_type=None,
+        new_sl_trigger_px_type=None,
+        new_trigger_px=None,
+        new_ord_px=None,
+        new_trigger_px_type=None,
+        new_callback_ratio=None,
+        new_callback_spread=None,
+        new_activation_price=None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn py_amend_algo_order<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: InstrumentId,
+        algo_id: String,
+        algo_cl_ord_id: Option<String>,
+        req_id: Option<String>,
+        new_sz: Option<Quantity>,
+        new_tp_trigger_px: Option<Price>,
+        new_tp_ord_px: Option<Price>,
+        new_sl_trigger_px: Option<Price>,
+        new_sl_ord_px: Option<Price>,
+        new_tp_trigger_px_type: Option<TriggerType>,
+        new_sl_trigger_px_type: Option<TriggerType>,
+        new_trigger_px: Option<Price>,
+        new_ord_px: Option<Price>,
+        new_trigger_px_type: Option<TriggerType>,
+        new_callback_ratio: Option<String>,
+        new_callback_spread: Option<String>,
+        new_activation_price: Option<Price>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let resp = client
+                .amend_algo_order_with_domain_types(
+                    instrument_id,
+                    algo_id,
+                    algo_cl_ord_id,
+                    req_id,
+                    new_sz,
+                    new_tp_trigger_px,
+                    new_tp_ord_px,
+                    new_sl_trigger_px,
+                    new_sl_ord_px,
+                    new_tp_trigger_px_type,
+                    new_sl_trigger_px_type,
+                    new_trigger_px,
+                    new_ord_px,
+                    new_trigger_px_type,
+                    new_callback_ratio,
+                    new_callback_spread,
+                    new_activation_price,
                 )
                 .await
                 .map_err(to_pyvalue_err)?;

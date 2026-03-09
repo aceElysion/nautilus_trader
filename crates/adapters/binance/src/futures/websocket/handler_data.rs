@@ -197,7 +197,7 @@ impl BinanceFuturesDataWsFeedHandler {
         }
     }
 
-    async fn send_unsubscribe(&mut self, streams: Vec<String>) {
+    async fn send_unsubscribe(&self, streams: Vec<String>) {
         let Some(client) = &self.client else {
             log::warn!("Cannot unsubscribe: no client connected");
             return;
@@ -226,8 +226,8 @@ impl BinanceFuturesDataWsFeedHandler {
             log::error!("Failed to send unsubscribe request: {e}");
         }
 
-        // Mark as unsubscribed
         for stream in &streams {
+            self.subscriptions_state.mark_unsubscribe(stream);
             self.subscriptions_state.confirm_unsubscribe(stream);
         }
     }

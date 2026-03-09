@@ -22,22 +22,25 @@ pub use nautilus_core::serialization::{
     deserialize_decimal_or_zero, deserialize_optional_decimal_or_zero,
     deserialize_optional_decimal_str, deserialize_string_to_u8,
 };
-use nautilus_core::{UUID4, datetime::NANOSECONDS_IN_MILLISECOND, nanos::UnixNanos};
+use nautilus_core::{
+    UUID4,
+    datetime::{NANOSECONDS_IN_MILLISECOND, nanos_to_millis as nanos_to_millis_u64},
+    nanos::UnixNanos,
+};
 use nautilus_model::{
     data::{
         Bar, BarType, BookOrder, FundingRateUpdate, OrderBookDelta, OrderBookDeltas, TradeTick,
     },
     enums::{
-        AccountType, AggressorSide, AssetClass, BarAggregation, BookAction, LiquiditySide,
-        OptionKind, OrderSide, OrderStatus, OrderType, PositionSideSpecified, RecordFlag,
-        TimeInForce, TriggerType,
+        AccountType, AggressorSide, BarAggregation, BookAction, LiquiditySide, OptionKind,
+        OrderSide, OrderStatus, OrderType, PositionSideSpecified, RecordFlag, TimeInForce,
+        TriggerType,
     },
     events::account::state::AccountState,
     identifiers::{AccountId, ClientOrderId, InstrumentId, Symbol, TradeId, Venue, VenueOrderId},
     instruments::{
-        Instrument, any::InstrumentAny, crypto_future::CryptoFuture,
+        Instrument, any::InstrumentAny, crypto_future::CryptoFuture, crypto_option::CryptoOption,
         crypto_perpetual::CryptoPerpetual, currency_pair::CurrencyPair,
-        option_contract::OptionContract,
     },
     reports::{FillReport, OrderStatusReport, PositionStatusReport},
     types::{AccountBalance, Currency, MarginBalance, Money, Price, Quantity},
@@ -47,6 +50,7 @@ use ustr::Ustr;
 
 use crate::{
     common::{
+        consts::{BYBIT_BASE_COIN, BYBIT_QUOTE_COIN},
         enums::{
             BybitContractType, BybitKlineInterval, BybitOptionType, BybitOrderSide,
             BybitOrderStatus, BybitOrderType, BybitPositionSide, BybitProductType,
@@ -76,13 +80,7 @@ pub fn extract_raw_symbol(symbol: &str) -> &str {
 #[must_use]
 pub fn make_bybit_symbol<S: AsRef<str>>(raw_symbol: S, product_type: BybitProductType) -> Ustr {
     let raw = raw_symbol.as_ref();
-    let suffix = match product_type {
-        BybitProductType::Spot => "-SPOT",
-        BybitProductType::Linear => "-LINEAR",
-        BybitProductType::Inverse => "-INVERSE",
-        BybitProductType::Option => "-OPTION",
-    };
-    Ustr::from(&format!("{raw}{suffix}"))
+    Ustr::from(&format!("{raw}{}", product_type.suffix()))
 }
 
 /// Converts a Bybit kline interval string to a Nautilus bar aggregation and step.
@@ -221,6 +219,7 @@ pub fn parse_spot_instrument(
         Some(default_margin()),
         Some(maker_fee),
         Some(taker_fee),
+        None,
         ts_event,
         ts_init,
     );
@@ -310,6 +309,7 @@ pub fn parse_linear_instrument(
                 Some(default_margin()),
                 Some(maker_fee),
                 Some(taker_fee),
+                None,
                 ts_event,
                 ts_init,
             );
@@ -343,6 +343,7 @@ pub fn parse_linear_instrument(
                 Some(default_margin()),
                 Some(maker_fee),
                 Some(taker_fee),
+                None,
                 ts_event,
                 ts_init,
             );
@@ -436,6 +437,7 @@ pub fn parse_inverse_instrument(
                 Some(default_margin()),
                 Some(maker_fee),
                 Some(taker_fee),
+                None,
                 ts_event,
                 ts_init,
             );
@@ -469,6 +471,7 @@ pub fn parse_inverse_instrument(
                 Some(default_margin()),
                 Some(maker_fee),
                 Some(taker_fee),
+                None,
                 ts_event,
                 ts_init,
             );
@@ -480,17 +483,20 @@ pub fn parse_inverse_instrument(
     }
 }
 
-/// Parses a Bybit option contract definition into a Nautilus option instrument.
+/// Parses a Bybit option contract definition into a Nautilus [`CryptoOption`].
 pub fn parse_option_instrument(
     definition: &BybitInstrumentOption,
     ts_event: UnixNanos,
     ts_init: UnixNanos,
 ) -> anyhow::Result<InstrumentAny> {
-    let quote_currency = get_currency(definition.quote_coin.as_str());
-
     let symbol = BybitSymbol::new(format!("{}-OPTION", definition.symbol))?;
     let instrument_id = symbol.to_instrument_id();
     let raw_symbol = Symbol::new(symbol.raw_symbol());
+    let underlying = get_currency(definition.base_coin.as_str());
+    let quote_currency = get_currency(definition.quote_coin.as_str());
+    let settlement_currency = get_currency(definition.settle_coin.as_str());
+    // Bybit Options are linear contracts — they are margined and settled in stablecoins
+    let is_inverse = false;
 
     let price_increment = parse_price(&definition.price_filter.tick_size, "priceFilter.tickSize")?;
     let max_price = Some(parse_price(
@@ -523,34 +529,39 @@ pub fn parse_option_instrument(
     let activation_ns = parse_millis_timestamp(&definition.launch_time, "launchTime")?;
     let expiration_ns = parse_millis_timestamp(&definition.delivery_time, "deliveryTime")?;
 
-    let instrument = OptionContract::new(
+    let instrument = CryptoOption::new(
         instrument_id,
         raw_symbol,
-        AssetClass::Cryptocurrency,
-        None,
-        definition.base_coin,
+        underlying,
+        quote_currency,
+        settlement_currency,
+        is_inverse,
         option_kind,
         strike_price,
-        quote_currency,
         activation_ns,
         expiration_ns,
         price_increment.precision,
+        lot_size.precision,
         price_increment,
-        Quantity::from(1_u32),
-        lot_size,
+        lot_size,                    // Lot size represents size increment.
+        Some(Quantity::from(1_u32)), // multiplier
+        Some(lot_size),
         max_quantity,
         min_quantity,
+        None,
+        None,
         max_price,
         min_price,
         Some(Decimal::ZERO),
         Some(Decimal::ZERO),
         Some(Decimal::ZERO),
         Some(Decimal::ZERO),
+        None,
         ts_event,
         ts_init,
     );
 
-    Ok(InstrumentAny::OptionContract(instrument))
+    Ok(InstrumentAny::CryptoOption(instrument))
 }
 
 /// Parses a REST trade payload into a [`TradeTick`].
@@ -619,6 +630,7 @@ pub fn parse_orderbook(
     let mut deltas = Vec::with_capacity(total_levels + 1);
 
     let mut clear = OrderBookDelta::clear(instrument_id, sequence, ts_event, ts_init);
+
     if total_levels == 0 {
         clear.flags |= RecordFlag::F_LAST as u8;
     }
@@ -631,6 +643,7 @@ pub fn parse_orderbook(
 
         processed += 1;
         let mut flags = RecordFlag::F_MBP as u8;
+
         if processed == total_levels {
             flags |= RecordFlag::F_LAST as u8;
         }
@@ -696,6 +709,7 @@ pub fn parse_kline_bar(
     let volume = parse_quantity_with_precision(&kline.volume, size_precision, "kline.volume")?;
 
     let mut ts_event = parse_millis_timestamp(&kline.start, "kline.start")?;
+
     if timestamp_on_close {
         let interval_ns = bar_type
             .spec()
@@ -749,13 +763,17 @@ pub fn parse_fill_report(
         "execution.execQty",
     )?;
 
-    // Parse commission (Bybit returns positive fee, Nautilus uses negative for costs)
-    let fee_f64 = execution
+    let fee_decimal: Decimal = execution
         .exec_fee
-        .parse::<f64>()
+        .parse()
         .with_context(|| format!("Failed to parse execFee='{}'", execution.exec_fee))?;
     let currency = get_currency(&execution.fee_currency);
-    let commission = Money::new(-fee_f64, currency);
+    let commission = Money::from_decimal(fee_decimal, currency).with_context(|| {
+        format!(
+            "Failed to create commission from execFee='{}'",
+            execution.exec_fee
+        )
+    })?;
 
     // Determine liquidity side from is_maker flag
     let liquidity_side = if execution.is_maker {
@@ -1207,6 +1225,90 @@ pub fn parse_order_status_report(
     Ok(report)
 }
 
+/// Returns the `marketUnit` parameter for spot market orders.
+#[must_use]
+pub fn spot_market_unit(
+    product_type: BybitProductType,
+    order_type: BybitOrderType,
+    is_quote_quantity: bool,
+) -> Option<String> {
+    if product_type == BybitProductType::Spot && order_type == BybitOrderType::Market {
+        if is_quote_quantity {
+            Some(BYBIT_QUOTE_COIN.to_string())
+        } else {
+            Some(BYBIT_BASE_COIN.to_string())
+        }
+    } else {
+        None
+    }
+}
+
+/// Returns the `isLeverage` parameter (spot-only).
+#[must_use]
+pub fn spot_leverage(product_type: BybitProductType, is_leverage: bool) -> Option<i32> {
+    if product_type == BybitProductType::Spot {
+        Some(i32::from(is_leverage))
+    } else {
+        None
+    }
+}
+
+/// Returns the trigger direction for stop and MIT orders.
+#[must_use]
+pub fn trigger_direction(
+    order_type: OrderType,
+    order_side: OrderSide,
+    is_stop_order: bool,
+) -> Option<BybitTriggerDirection> {
+    if !is_stop_order {
+        return None;
+    }
+    match (order_type, order_side) {
+        (OrderType::StopMarket | OrderType::StopLimit, OrderSide::Buy) => {
+            Some(BybitTriggerDirection::RisesTo)
+        }
+        (OrderType::StopMarket | OrderType::StopLimit, OrderSide::Sell) => {
+            Some(BybitTriggerDirection::FallsTo)
+        }
+        (OrderType::MarketIfTouched | OrderType::LimitIfTouched, OrderSide::Buy) => {
+            Some(BybitTriggerDirection::FallsTo)
+        }
+        (OrderType::MarketIfTouched | OrderType::LimitIfTouched, OrderSide::Sell) => {
+            Some(BybitTriggerDirection::RisesTo)
+        }
+        _ => None,
+    }
+}
+
+/// Maps Nautilus time-in-force to Bybit's TIF.
+///
+/// Returns `Err(tif)` with the unsupported value for caller-specific error wrapping.
+pub fn map_time_in_force(
+    order_type: BybitOrderType,
+    time_in_force: Option<TimeInForce>,
+    post_only: Option<bool>,
+) -> Result<Option<BybitTimeInForce>, TimeInForce> {
+    if order_type == BybitOrderType::Market {
+        return Ok(None);
+    }
+
+    if post_only == Some(true) {
+        return Ok(Some(BybitTimeInForce::PostOnly));
+    }
+    match time_in_force {
+        Some(TimeInForce::Gtc) => Ok(Some(BybitTimeInForce::Gtc)),
+        Some(TimeInForce::Ioc) => Ok(Some(BybitTimeInForce::Ioc)),
+        Some(TimeInForce::Fok) => Ok(Some(BybitTimeInForce::Fok)),
+        Some(tif) => Err(tif),
+        None => Ok(None),
+    }
+}
+
+/// Converts an optional `UnixNanos` timestamp to optional milliseconds.
+pub fn nanos_to_millis(value: Option<UnixNanos>) -> Option<i64> {
+    value.map(|nanos| nanos_to_millis_u64(nanos.as_u64()) as i64)
+}
+
 #[cfg(test)]
 mod tests {
     use nautilus_model::{
@@ -1308,17 +1410,24 @@ mod tests {
     }
 
     #[rstest]
-    fn parse_option_instrument_builds_option_contract() {
+    fn parse_option_instrument_builds_crypto_option() {
         let json = load_test_json("http_get_instruments_option.json");
         let response: BybitInstrumentOptionResponse = serde_json::from_str(&json).unwrap();
         let instrument = &response.result.list[0];
 
         let parsed = parse_option_instrument(instrument, TS, TS).unwrap();
         match parsed {
-            InstrumentAny::OptionContract(option) => {
+            InstrumentAny::CryptoOption(option) => {
                 assert_eq!(option.id.to_string(), "ETH-26JUN26-16000-P-OPTION.BYBIT");
+                assert_eq!(option.underlying.code.as_str(), "ETH");
+                assert_eq!(option.quote_currency.code.as_str(), "USDC");
+                assert_eq!(option.settlement_currency.code.as_str(), "USDC");
+                assert!(!option.is_inverse);
                 assert_eq!(option.option_kind, OptionKind::Put);
+                assert_eq!(option.price_precision, 1);
                 assert_eq!(option.price_increment, Price::from_str("0.1").unwrap());
+                assert_eq!(option.size_precision, 0);
+                assert_eq!(option.size_increment, Quantity::from_str("1").unwrap());
                 assert_eq!(option.lot_size, Quantity::from_str("1").unwrap());
             }
             other => panic!("unexpected instrument variant: {other:?}"),
