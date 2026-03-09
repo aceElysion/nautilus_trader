@@ -8080,9 +8080,6 @@ class OKXHttpClient:
         trigger_type: TriggerType | None = None,
         limit_price: Price | None = None,
         reduce_only: bool | None = None,
-        callback_ratio: str | None = None,
-        callback_spread: str | None = None,
-        activation_price: Price | None = None,
         tp_trigger_px: Price | None = None,
         tp_trigger_px_type: TriggerType | None = None,
         tp_ord_px: Price | None = None,
@@ -8092,6 +8089,9 @@ class OKXHttpClient:
         sl_ord_px: Price | None = None,
         cxl_on_close_pos: bool | None = None,
         algo_order_type: str | None = None,
+        callback_ratio: str | None = None,
+        callback_spread: str | None = None,
+        activation_price: Price | None = None,
     ) -> Any: ...
     async def cancel_algo_order(
         self,

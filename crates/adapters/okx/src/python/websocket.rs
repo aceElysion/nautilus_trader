@@ -1046,10 +1046,13 @@ impl OKXWebSocketClient {
         order_side,
         order_type,
         quantity,
-        trigger_price,
+        trigger_price=None,
         trigger_type=None,
         limit_price=None,
         reduce_only=None,
+        callback_ratio=None,
+        callback_spread=None,
+        activation_price=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn py_submit_algo_order<'py>(
@@ -1063,10 +1066,13 @@ impl OKXWebSocketClient {
         order_side: OrderSide,
         order_type: OrderType,
         quantity: Quantity,
-        trigger_price: Price,
+        trigger_price: Option<Price>,
         trigger_type: Option<nautilus_model::enums::TriggerType>,
         limit_price: Option<Price>,
         reduce_only: Option<bool>,
+        callback_ratio: Option<String>,
+        callback_spread: Option<String>,
+        activation_price: Option<Price>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
 
@@ -1085,6 +1091,9 @@ impl OKXWebSocketClient {
                     trigger_type,
                     limit_price,
                     reduce_only,
+                    callback_ratio,
+                    callback_spread,
+                    activation_price,
                 )
                 .await
                 .map_err(to_pyvalue_err)

@@ -929,6 +929,8 @@ class OKXExecutionClient(LiveExecutionClient):
 
     # -- COMMAND HANDLERS -------------------------------------------------------------------------
 
+
+
     def _get_trade_mode_for_order(
         self,
         instrument_id: InstrumentId,
@@ -1042,6 +1044,11 @@ class OKXExecutionClient(LiveExecutionClient):
             else None
         )
 
+        pos_side_param = command.params.get("pos_side") if command.params else None
+        pyo3_position_side = (
+            position_side_to_pyo3(pos_side_param) if pos_side_param is not None else None
+        )
+
         pyo3_time_in_force = (
             time_in_force_to_pyo3(order.time_in_force) if order.time_in_force else None
         )
@@ -1072,6 +1079,7 @@ class OKXExecutionClient(LiveExecutionClient):
                 post_only=order.is_post_only,
                 reduce_only=order.is_reduce_only,
                 quote_quantity=order.is_quote_quantity,
+                position_side=pyo3_position_side,
             )
         except Exception as e:
             self.generate_order_rejected(
@@ -1104,6 +1112,11 @@ class OKXExecutionClient(LiveExecutionClient):
 
         pyo3_trigger_type = (
             trigger_type_to_pyo3(order.trigger_type) if hasattr(order, "trigger_type") else None
+        )
+
+        pos_side_param = command.params.get("pos_side") if command.params else None
+        pyo3_position_side = (
+            position_side_to_pyo3(pos_side_param) if pos_side_param is not None else None
         )
 
         callback_ratio = None
@@ -1179,6 +1192,7 @@ class OKXExecutionClient(LiveExecutionClient):
                 trigger_type=pyo3_trigger_type,
                 limit_price=pyo3_limit_price,
                 reduce_only=order.is_reduce_only if order.is_reduce_only else None,
+                position_side=pyo3_position_side,
                 callback_ratio=callback_ratio,
                 callback_spread=callback_spread,
                 activation_price=pyo3_activation_price,

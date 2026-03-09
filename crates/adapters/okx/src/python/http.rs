@@ -506,6 +506,7 @@ impl OKXHttpClient {
         trigger_type=None,
         limit_price=None,
         reduce_only=None,
+        position_side=None,
         tp_trigger_px=None,
         tp_trigger_px_type=None,
         tp_ord_px=None,
@@ -535,6 +536,7 @@ impl OKXHttpClient {
         trigger_type: Option<TriggerType>,
         limit_price: Option<Price>,
         reduce_only: Option<bool>,
+        position_side: Option<nautilus_model::enums::PositionSide>,
         tp_trigger_px: Option<Price>,
         tp_trigger_px_type: Option<TriggerType>,
         tp_ord_px: Option<Price>,
@@ -575,6 +577,7 @@ impl OKXHttpClient {
                     trigger_type,
                     limit_price,
                     reduce_only,
+                    position_side,
                     tp_trigger_px,
                     tp_trigger_px_type,
                     tp_ord_px,
@@ -821,93 +824,7 @@ impl OKXHttpClient {
         })
     }
 
-    #[pyo3(name = "amend_algo_order")]
-    #[pyo3(signature = (
-        instrument_id,
-        algo_id,
-        algo_cl_ord_id=None,
-        req_id=None,
-        new_sz=None,
-        new_tp_trigger_px=None,
-        new_tp_ord_px=None,
-        new_sl_trigger_px=None,
-        new_sl_ord_px=None,
-        new_tp_trigger_px_type=None,
-        new_sl_trigger_px_type=None,
-        new_trigger_px=None,
-        new_ord_px=None,
-        new_trigger_px_type=None,
-        new_callback_ratio=None,
-        new_callback_spread=None,
-        new_activation_price=None,
-    ))]
-    #[allow(clippy::too_many_arguments)]
-    fn py_amend_algo_order<'py>(
-        &self,
-        py: Python<'py>,
-        instrument_id: InstrumentId,
-        algo_id: String,
-        algo_cl_ord_id: Option<String>,
-        req_id: Option<String>,
-        new_sz: Option<Quantity>,
-        new_tp_trigger_px: Option<Price>,
-        new_tp_ord_px: Option<Price>,
-        new_sl_trigger_px: Option<Price>,
-        new_sl_ord_px: Option<Price>,
-        new_tp_trigger_px_type: Option<TriggerType>,
-        new_sl_trigger_px_type: Option<TriggerType>,
-        new_trigger_px: Option<Price>,
-        new_ord_px: Option<Price>,
-        new_trigger_px_type: Option<TriggerType>,
-        new_callback_ratio: Option<String>,
-        new_callback_spread: Option<String>,
-        new_activation_price: Option<Price>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let client = self.clone();
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let resp = client
-                .amend_algo_order_with_domain_types(
-                    instrument_id,
-                    algo_id,
-                    algo_cl_ord_id,
-                    req_id,
-                    new_sz,
-                    new_tp_trigger_px,
-                    new_tp_ord_px,
-                    new_sl_trigger_px,
-                    new_sl_ord_px,
-                    new_tp_trigger_px_type,
-                    new_sl_trigger_px_type,
-                    new_trigger_px,
-                    new_ord_px,
-                    new_trigger_px_type,
-                    new_callback_ratio,
-                    new_callback_spread,
-                    new_activation_price,
-                )
-                .await
-                .map_err(to_pyvalue_err)?;
-
-            Python::attach(|py| {
-                let dict = PyDict::new(py);
-                dict.set_item("algo_id", resp.algo_id)?;
-                if let Some(algo_cl_ord_id) = resp.algo_cl_ord_id {
-                    dict.set_item("algo_cl_ord_id", algo_cl_ord_id)?;
-                }
-                if let Some(req_id) = resp.req_id {
-                    dict.set_item("req_id", req_id)?;
-                }
-                if let Some(s_code) = resp.s_code {
-                    dict.set_item("s_code", s_code)?;
-                }
-                if let Some(s_msg) = resp.s_msg {
-                    dict.set_item("s_msg", s_msg)?;
-                }
-                Ok(dict.into_py_any_unwrap(py))
-            })
-        })
-    }
 
     #[pyo3(name = "get_server_time")]
     fn py_get_server_time<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {

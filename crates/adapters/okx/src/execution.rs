@@ -17,6 +17,7 @@
 
 use std::{
     future::Future,
+    str::FromStr,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -239,6 +240,11 @@ impl OKXExecutionClient {
         let is_post_only = order.is_post_only();
         let is_reduce_only = order.is_reduce_only();
         let is_quote_quantity = order.is_quote_quantity();
+        let position_side = cmd
+            .params
+            .as_ref()
+            .and_then(|p| p.get_str("pos_side"))
+            .and_then(|s| nautilus_model::enums::PositionSide::from_str(s).ok());
 
         self.spawn_task("submit_order", async move {
             let result = ws_private
@@ -257,7 +263,7 @@ impl OKXExecutionClient {
                     Some(is_post_only),
                     Some(is_reduce_only),
                     Some(is_quote_quantity),
-                    None,
+                    position_side,
                 )
                 .await
                 .map_err(|e| anyhow::anyhow!("Submit order failed: {e}"));
@@ -340,6 +346,12 @@ impl OKXExecutionClient {
             (None, None)
         };
 
+        let position_side = cmd
+            .params
+            .as_ref()
+            .and_then(|p| p.get_str("pos_side"))
+            .and_then(|s| nautilus_model::enums::PositionSide::from_str(s).ok());
+
         self.spawn_task("submit_algo_order", async move {
             let result = http_client
                 .place_algo_order_with_domain_types(
@@ -353,6 +365,7 @@ impl OKXExecutionClient {
                     trigger_type,
                     price,
                     Some(is_reduce_only),
+                    position_side,
                     None,
                     None,
                     None,

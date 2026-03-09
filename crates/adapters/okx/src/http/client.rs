@@ -100,7 +100,7 @@ use crate::{
         credential::Credential,
         enums::{
             OKXAlgoOrderType, OKXContractType, OKXInstrumentStatus, OKXInstrumentType,
-            OKXOrderStatus, OKXPositionMode, OKXSide, OKXTradeMode, OKXTriggerType,
+            OKXOrderStatus, OKXPositionMode, OKXPositionSide, OKXSide, OKXTradeMode, OKXTriggerType,
             conditional_order_to_algo_type,
         },
         models::OKXInstrument,
@@ -3396,6 +3396,7 @@ impl OKXHttpClient {
         trigger_type: Option<TriggerType>,
         limit_price: Option<Price>,
         reduce_only: Option<bool>,
+        position_side: Option<nautilus_model::enums::PositionSide>,
         tp_trigger_price: Option<Price>,
         tp_trigger_type: Option<TriggerType>,
         tp_order_price: Option<Price>,
@@ -3492,6 +3493,13 @@ impl OKXHttpClient {
             }
         }
 
+        let okx_pos_side = position_side.map(|ps| match ps {
+            nautilus_model::enums::PositionSide::Long => OKXPositionSide::Long,
+            nautilus_model::enums::PositionSide::Short => OKXPositionSide::Short,
+            nautilus_model::enums::PositionSide::Flat => OKXPositionSide::Net, // Map Flat to Net
+            _ => OKXPositionSide::Net,
+        });
+
         let request = OKXPlaceAlgoOrderRequest {
             inst_id: instrument_id.symbol.as_str().to_string(),
             inst_id_code: None,
@@ -3504,7 +3512,7 @@ impl OKXHttpClient {
             order_px: order_px,
             trigger_px_type: trigger_px_type,
             tgt_ccy: None,
-            pos_side: None,
+            pos_side: okx_pos_side,
             close_position: None,
             tag: Some(OKX_NAUTILUS_BROKER_ID.to_string()),
             reduce_only: reduce_only,
