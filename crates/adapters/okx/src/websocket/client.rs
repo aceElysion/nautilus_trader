@@ -1957,9 +1957,9 @@ impl OKXWebSocketClient {
         let instrument = self
             .instruments_cache
             .get(&instrument_id.symbol.inner())
-            .ok_or_else(|| OKXWsError::ClientError(format!("Unknown instrument {instrument_id}")))?
-            .value()
-            .clone();
+            .ok_or_else(|| {
+                OKXWsError::ClientError(format!("Unknown instrument {instrument_id}"))
+            })?;
 
         let instrument_type =
             okx_instrument_type(&instrument).map_err(|e| OKXWsError::ClientError(e.to_string()))?;
@@ -1987,12 +1987,6 @@ impl OKXWebSocketClient {
                 // Use Net for one-way mode (default for NETTING OMS)
                 if position_side.is_none() {
                     builder.pos_side(OKXPositionSide::Net);
-                }
-
-                if let Some(ro) = reduce_only
-                    && ro
-                {
-                    builder.reduce_only(ro);
                 }
             }
             _ => {
@@ -2039,7 +2033,7 @@ impl OKXWebSocketClient {
         builder.side(order_side.as_specified());
 
         if let Some(pos_side) = position_side {
-            builder.pos_side(pos_side);
+            builder.pos_side(OKXPositionSide::from(pos_side));
         }
 
         // OKX implements FOK/IOC as order types rather than separate time-in-force
