@@ -436,6 +436,17 @@ cpdef contingency_type_to_pyo3(ContingencyType value):
     raise ValueError(f"Unsupported `ContingencyType`, was '{contingency_type_to_str(value)}'")
 
 
+cpdef position_side_to_pyo3(PositionSide value):
+    if value == PositionSide.FLAT:
+        return nautilus_pyo3.PositionSide.FLAT
+    if value == PositionSide.LONG:
+        return nautilus_pyo3.PositionSide.LONG
+    if value == PositionSide.SHORT:
+        return nautilus_pyo3.PositionSide.SHORT
+
+    raise ValueError(f"Unsupported `PositionSide`, was '{position_side_to_str(value)}'")
+
+
 cpdef OrderSide order_side_from_pyo3(value: nautilus_pyo3.OrderSide):
     if value == nautilus_pyo3.OrderSide.BUY:
         return OrderSide.BUY
