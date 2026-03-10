@@ -1909,6 +1909,25 @@ impl OKXWebSocketClient {
         quote_quantity: Option<bool>,
         position_side: Option<PositionSide>,
     ) -> Result<(), OKXWsError> {
+        log::info!(
+            "submit_order called with trader_id={:?}, strategy_id={:?}, instrument_id={:?}, td_mode={:?}, client_order_id={:?}, order_side={:?}, order_type={:?}, quantity={:?}, time_in_force={:?}, price={:?}, trigger_price={:?}, post_only={:?}, reduce_only={:?}, quote_quantity={:?}, position_side={:?}",
+            trader_id,
+            strategy_id,
+            instrument_id,
+            td_mode,
+            client_order_id,
+            order_side,
+            order_type,
+            quantity,
+            time_in_force,
+            price,
+            trigger_price,
+            post_only,
+            reduce_only,
+            quote_quantity,
+            position_side
+        );
+
         if !OKX_SUPPORTED_ORDER_TYPES.contains(&order_type) {
             return Err(OKXWsError::ClientError(format!(
                 "Unsupported order type: {order_type:?}",
