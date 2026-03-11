@@ -854,7 +854,7 @@ impl From<PositionSide> for OKXPositionSide {
 #[strum(serialize_all = "snake_case")]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(eq, eq_int, module = "nautilus_trader.core.nautilus_pyo3.okx")
+    pyo3::pyclass(eq, eq_int, module = "nautilus_trader.core.nautilus_pyo3.okx", from_py_object)
 )]
 pub enum OKXAlgoOrderType {
     Conditional,
