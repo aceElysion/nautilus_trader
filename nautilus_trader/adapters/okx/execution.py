@@ -1045,12 +1045,12 @@ class OKXExecutionClient(LiveExecutionClient):
             else None
         )
 
-        self._log.info(f"Before pos_side logic: command.params={command.params}")
         pos_side_param = command.params.get("pos_side") if command.params else None
-        pyo3_position_side = (
-            position_side_to_pyo3(pos_side_param) if pos_side_param is not None else None
-        )
-        self._log.info(f"After pos_side logic: pos_side_param={pos_side_param}, pyo3_position_side={pyo3_position_side}")
+        pyo3_position_side = None
+        if pos_side_param is not None:
+            if isinstance(pos_side_param, str):
+                pos_side_param = PositionSide[pos_side_param.upper()]
+            pyo3_position_side = position_side_to_pyo3(pos_side_param)
 
         pyo3_time_in_force = (
             time_in_force_to_pyo3(order.time_in_force) if order.time_in_force else None
@@ -1118,9 +1118,11 @@ class OKXExecutionClient(LiveExecutionClient):
         )
 
         pos_side_param = command.params.get("pos_side") if command.params else None
-        pyo3_position_side = (
-            position_side_to_pyo3(pos_side_param) if pos_side_param is not None else None
-        )
+        pyo3_position_side = None
+        if pos_side_param is not None:
+            if isinstance(pos_side_param, str):
+                pos_side_param = PositionSide[pos_side_param.upper()]
+            pyo3_position_side = position_side_to_pyo3(pos_side_param)
 
         callback_ratio = None
         callback_spread = None
